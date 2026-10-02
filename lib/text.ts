@@ -25,6 +25,7 @@ export function parseMoney(raw: string): number | null {
     negative = true;
     source = source.slice(1);
   }
+  if (/^\d{1,2}[./]\d{1,2}[./]\d{2,4}$/.test(source)) return null;
 
   if (source.includes(",") && source.includes(".")) {
     if (source.lastIndexOf(",") > source.lastIndexOf(".")) {
@@ -85,6 +86,14 @@ export function normalizeHeader(value: string): string {
     .trim();
 }
 
+export function summaryKind(text: string): "opening" | "turnover" | "closing" | null {
+  const normalized = normalizeHeader(text);
+  if (/сальдо началь|входящ[а-я]* сальдо/.test(normalized)) return "opening";
+  if (/обороты/.test(normalized)) return "turnover";
+  if (/сальдо конеч|исходящ[а-я]* сальдо/.test(normalized)) return "closing";
+  return null;
+}
+
 export function extractDocNumber(text: string): string | null {
   if (!text.trim()) return null;
   const patterns = [
@@ -102,6 +111,11 @@ export function extractDocNumber(text: string): string | null {
 export function docFromDocumentCell(text: string): string | null {
   const extracted = extractDocNumber(text);
   if (extracted) return extracted;
+  const tokens = text.match(/\d{4,14}(?:-\d{1,6})?/g) ?? [];
+  const withSuffix = tokens.find((token) => token.includes("-"));
+  if (withSuffix) return withSuffix;
+  const long = tokens.find((token) => token.length >= 5);
+  if (long) return long;
   if (/^\d{1,8}$/.test(text.trim())) return text.trim();
   return null;
 }

@@ -6,9 +6,9 @@ import {
   extractDocNumber,
   extractParties,
   extractPeriod,
-  normalizeHeader,
   parseDate,
   parseMoney,
+  summaryKind,
 } from "@/lib/text";
 
 type Role = "date" | "document" | "debit" | "credit";
@@ -19,14 +19,6 @@ type ColumnBound = {
   left: number;
   right: number;
 };
-
-function summaryKind(text: string): "opening" | "turnover" | "closing" | null {
-  const normalized = normalizeHeader(text);
-  if (/сальдо началь/.test(normalized)) return "opening";
-  if (/обороты/.test(normalized)) return "turnover";
-  if (/сальдо конеч/.test(normalized)) return "closing";
-  return null;
-}
 
 export function groupLines(words: OcrWord[]): OcrWord[][] {
   const items = words.filter((word) => word.text.trim());
@@ -100,9 +92,15 @@ function boundsFromHeader(line: OcrWord[]): ColumnBound[] {
   const sides: { role: Role; center: number; side: SideName }[] = [];
   let side: SideName = "ours";
   let seenDate = false;
+  let seenAmount = false;
   for (const column of columns) {
-    if (column.role === "date" && seenDate) side = "theirs";
+    if (column.role === "date" && seenDate && seenAmount) {
+      side = "theirs";
+      seenDate = false;
+      seenAmount = false;
+    }
     if (column.role === "date") seenDate = true;
+    if (column.role === "debit" || column.role === "credit") seenAmount = true;
     sides.push({ ...column, side: side === "theirs" ? "theirs" : "ours" });
   }
   if (!sides.some((column) => column.side === "theirs")) {
@@ -121,10 +119,10 @@ function boundsFromHeader(line: OcrWord[]): ColumnBound[] {
   });
 }
 
-function joinWords(words: OcrWord[]): string {
+function joinWords(words: OcrWord[], separate = false): string {
   const texts = words.map((word) => word.text.trim()).filter(Boolean);
   if (texts.length === 0) return "";
-  if (texts.every((text) => /^[\d.,\-–—]+$/.test(text))) return texts.join("");
+  if (!separate && texts.every((text) => /^[\d.,\-–—]+$/.test(text))) return texts.join("");
   return texts.join(" ");
 }
 
@@ -134,11 +132,11 @@ function wordsFor(
   side: SideName,
   role: Role,
 ): OcrWord[] {
-  const column = bounds.find((item) => item.side === side && item.role === role);
-  if (!column) return [];
+  const columns = bounds.filter((item) => item.side === side && item.role === role);
+  if (columns.length === 0) return [];
   return line.filter((word) => {
     const center = (word.x0 + word.x1) / 2;
-    return center >= column.left && center < column.right;
+    return columns.some((column) => center >= column.left && center < column.right);
   });
 }
 
@@ -177,8 +175,15 @@ function parseWithColumns(lines: OcrWord[][], bounds: ColumnBound[]): {
     const kind = summaryKind(text);
     if (kind) {
       for (const side of sides) {
-        const debit = parseMoney(joinWords(wordsFor(line, bounds, side, "debit")));
-        const credit = parseMoney(joinWords(wordsFor(line, bounds, side, "credit")));
+        let debit = parseMoney(joinWords(wordsFor(line, bounds, side, "debit")));
+        let credit = parseMoney(joinWords(wordsFor(line, bounds, side, "credit")));
+        if (debit == null && credit == null) {
+          const next = lines[index + 1];
+          if (next && !summaryKind(lineText(next)) && !parseDate(joinWords(wordsFor(next, bounds, side, "date")))) {
+            debit = parseMoney(joinWords(wordsFor(next, bounds, side, "debit")));
+            credit = parseMoney(joinWords(wordsFor(next, bounds, side, "credit")));
+          }
+        }
         applySummary(side === "theirs" && theirsSummary ? theirsSummary : summary, kind, debit, credit);
       }
       return;
@@ -186,12 +191,12 @@ function parseWithColumns(lines: OcrWord[][], bounds: ColumnBound[]): {
 
     for (const side of sides) {
       const dateRaw = joinWords(wordsFor(line, bounds, side, "date"));
-      const documentRaw = joinWords(wordsFor(line, bounds, side, "document"));
+      const documentRaw = joinWords(wordsFor(line, bounds, side, "document"), true);
       const debit = parseMoney(joinWords(wordsFor(line, bounds, side, "debit")));
       const credit = parseMoney(joinWords(wordsFor(line, bounds, side, "credit")));
       const date = parseDate(dateRaw);
       const docNumber = docFromDocumentCell(documentRaw);
-      if (!date && debit == null && credit == null) continue;
+      if (debit == null && credit == null) continue;
       if (!date && !docNumber) continue;
       actLines.push({
         id: `${side}-${index}`,
@@ -208,25 +213,64 @@ function parseWithColumns(lines: OcrWord[][], bounds: ColumnBound[]): {
   return { actLines, summary, theirsSummary };
 }
 
-function moneyTokens(line: OcrWord[]): { value: number; x: number }[] {
-  const tokens: { value: number; x: number }[] = [];
+function moneyTokens(line: OcrWord[]): { value: number; x: number; decimal: boolean }[] {
+  const tokens: { value: number; x: number; decimal: boolean }[] = [];
   let buffer: OcrWord[] = [];
   const flush = () => {
     if (buffer.length === 0) return;
-    const value = parseMoney(joinWords(buffer));
+    const raw = joinWords(buffer);
+    const value = parseMoney(raw);
     if (value != null) {
       const x0 = Math.min(...buffer.map((word) => word.x0));
       const x1 = Math.max(...buffer.map((word) => word.x1));
-      tokens.push({ value, x: (x0 + x1) / 2 });
+      tokens.push({ value, x: (x0 + x1) / 2, decimal: /,\d{1,2}$/.test(raw) });
     }
     buffer = [];
   };
   for (const word of line) {
-    if (/^[\d.,\-–—]+$/.test(word.text.trim())) buffer.push(word);
-    else flush();
+    const text = word.text.trim();
+    if (!/^[\d.,\-–—]+$/.test(text)) {
+      flush();
+      continue;
+    }
+    const previous = buffer[buffer.length - 1];
+    if (previous && word.x0 - previous.x1 > 36) flush();
+    buffer.push(word);
   }
   flush();
   return tokens;
+}
+
+function summariesFromLabels(lines: OcrWord[][]): ActSummary {
+  const summary = emptySummary();
+  lines.forEach((line, index) => {
+    const kind = summaryKind(lineText(line));
+    if (!kind) return;
+    const ownMoney = moneyTokens(line);
+    const next = lines[index + 1];
+    const nextText = next ? lineText(next) : "";
+    const nextIsRow = Boolean(next && parseDate(nextText) && docFromDocumentCell(nextText));
+    const valueLine = ownMoney.length > 0 ? line : !next || summaryKind(nextText) || nextIsRow ? null : next;
+    if (!valueLine) return;
+    const debitWord = line.find((word) => headerRole(word.text) === "debit");
+    const creditWord = line.find((word) => headerRole(word.text) === "credit");
+    const tokens = moneyTokens(valueLine);
+    let debit: number | null = null;
+    let credit: number | null = null;
+    if (debitWord && creditWord) {
+      const split =
+        ((debitWord.x0 + debitWord.x1) / 2 + (creditWord.x0 + creditWord.x1) / 2) / 2;
+      for (const token of tokens) {
+        if (token.x < split) debit = token.value;
+        else credit = token.value;
+      }
+    } else {
+      debit = tokens[0]?.value ?? null;
+      credit = tokens[1]?.value ?? null;
+    }
+    applySummary(summary, kind, debit, credit);
+  });
+  return summary;
 }
 
 function parsePlain(lines: OcrWord[][]): ActLine[] {
@@ -249,7 +293,7 @@ function parsePlain(lines: OcrWord[][]): ActLine[] {
     if (summaryKind(text) || headerScore(line) > 0) return;
     const date = parseDate(text);
     if (!date) return;
-    const tokens = moneyTokens(line);
+    const tokens = moneyTokens(line).filter((token) => token.decimal);
     let debit: number | null = null;
     let credit: number | null = null;
     if (split == null) {
@@ -285,18 +329,54 @@ function meanConfidence(words: OcrWord[]): number | null {
   return Math.round(total / words.length);
 }
 
+function lineCenter(line: OcrWord[]): number {
+  if (line.length === 0) return 0;
+  return line.reduce((sum, word) => sum + (word.y0 + word.y1) / 2, 0) / line.length;
+}
+
+function lineHeight(line: OcrWord[]): number {
+  return Math.max(8, ...line.map((word) => word.y1 - word.y0));
+}
+
+function findHeader(lines: OcrWord[][]): OcrWord[] | null {
+  let best: OcrWord[] | null = null;
+  let bestScore = 0;
+  const consider = (line: OcrWord[]) => {
+    const score = headerScore(line);
+    if (score > bestScore) {
+      bestScore = score;
+      best = line;
+    }
+  };
+  for (let index = 0; index < lines.length; index += 1) {
+    consider(lines[index]);
+    const next = lines[index + 1];
+    if (!next) continue;
+    const gap = lineCenter(next) - lineCenter(lines[index]);
+    const limit = Math.max(lineHeight(lines[index]), lineHeight(next)) * 2.4;
+    if (gap < 0 || gap > limit) continue;
+    consider([...lines[index], ...next]);
+  }
+  return best;
+}
+
 export function parseOcrWords(words: OcrWord[], rawText = ""): ParsedAct {
   const lines = groupLines(words);
-  const header = [...lines].sort((a, b) => headerScore(b) - headerScore(a))[0];
-  const bounds = header && headerScore(header) > 0 ? boundsFromHeader(header) : [];
+  const header = findHeader(lines);
+  const bounds = header ? boundsFromHeader(header) : [];
   const columnParsed = bounds.length
     ? parseWithColumns(lines, bounds)
     : { actLines: [], summary: emptySummary(), theirsSummary: null };
   const plain = parsePlain(lines);
   const usePlain = columnParsed.actLines.length === 0 && plain.length > 0;
   const actLines = usePlain ? plain : columnParsed.actLines;
+  const summary = { ...(usePlain ? emptySummary() : columnParsed.summary) };
+  const anchored = summariesFromLabels(lines);
+  for (const key of Object.keys(summary) as (keyof ActSummary)[]) {
+    if (summary[key] == null && anchored[key] != null) summary[key] = anchored[key];
+  }
   const warnings: string[] = [];
-  if (bounds.length === 0) {
+  if (bounds.length === 0 && actLines.length > 0) {
     warnings.push(
       "На скане не нашлась шапка таблицы с колонками «Дата» и «Дебет». Строки собраны по тексту, суммы стоит проверить.",
     );
@@ -314,7 +394,7 @@ export function parseOcrWords(words: OcrWord[], rawText = ""): ParsedAct {
     partyA: parties.partyA,
     partyB: parties.partyB,
     lines: actLines,
-    summary: usePlain ? emptySummary() : columnParsed.summary,
+    summary,
     theirsSummary: usePlain ? null : columnParsed.theirsSummary,
     warnings,
     confidence: meanConfidence(words),

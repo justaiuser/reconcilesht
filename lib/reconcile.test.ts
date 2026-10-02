@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseMoney, parseDate, extractDocNumber, normalizeDoc } from "./text";
+import { parseMoney, parseDate, extractDocNumber, docFromDocumentCell, normalizeDoc } from "./text";
 import { detectColumns, parseExcelMatrix } from "./excel-act";
 import { parseOcrWords } from "./ocr-table";
 import { compareActs } from "./compare";
@@ -25,6 +25,8 @@ describe("деньги и даты", () => {
     assert.equal(extractDocNumber("Реализация №15"), "15");
     assert.equal(extractDocNumber("Оплата п/п №42"), "42");
     assert.equal(normalizeDoc("015"), normalizeDoc("15"));
+    assert.equal(docFromDocumentCell("1800065755-254"), "1800065755-254");
+    assert.equal(docFromDocumentCell("1800065755 1800065755-254"), "1800065755-254");
   });
 });
 
@@ -91,6 +93,48 @@ describe("разбор скана по координатам слов", () => {
   });
 });
 
+describe("односторонний скан с двумя датами", () => {
+  it("берёт номер счёта, дебет и входящее сальдо со следующей строки", () => {
+    const words: OcrWord[] = [
+      word("Дата", 420, 80),
+      word("Дата", 580, 80),
+      word("Документа", 40, 112),
+      word("документа", 220, 112),
+      word("дебету", 820, 112),
+      word("кредиту", 1040, 112),
+      word("Входящее", 40, 160),
+      word("сальдо", 160, 160),
+      word("0,00", 800, 200),
+      word("0,00", 1040, 200),
+      word("1800065755", 40, 250),
+      word("1800065755-254", 220, 250),
+      word("24.09.2025", 420, 250),
+      word("24.09.2025", 580, 250),
+      word("1", 760, 250),
+      word("330", 800, 250),
+      word("442,88", 860, 250),
+      word("Обороты", 40, 320),
+      word("по", 160, 320),
+      word("дебету", 220, 320),
+      word("26", 740, 360),
+      word("306", 800, 360),
+      word("875,68", 860, 360),
+      word("0,00", 1040, 360),
+    ];
+    const act = parseOcrWords(words, "");
+    assert.equal(act.twoSided, false);
+    assert.equal(act.lines.length, 1);
+    assert.equal(act.lines[0]?.docNumber, "1800065755-254");
+    assert.equal(act.lines[0]?.date, "2025-09-24");
+    assert.equal(act.lines[0]?.debit, 1330442.88);
+    assert.equal(act.lines[0]?.credit, null);
+    assert.equal(act.summary.openingDebit, 0);
+    assert.equal(act.summary.openingCredit, 0);
+    assert.equal(act.summary.turnoverDebit, 26306875.68);
+    assert.equal(act.summary.turnoverCredit, 0);
+  });
+});
+
 describe("сравнение", () => {
   it("показывает расхождения примера в колонке контрагента", () => {
     const matrix = buildExcelMatrix();
@@ -115,6 +159,38 @@ describe("сравнение", () => {
     assert.equal(byDoc("31")?.status, "excel-only");
     assert.equal(byDoc("5")?.status, "scan-only");
     assert.equal(theirs.summary.some((row) => row.label.startsWith("Сальдо конечное") && row.status === "diff"), true);
+  });
+
+  it("зеркалит кредит Excel и дебет скана по номеру счёта", () => {
+    const matrix = [
+      ["Дата", "Документ", "Дебет", "Кредит"],
+      ["Сальдо начальное", null, null, 26306875.68],
+      ["24.09.2025", "1800065755-254", null, 1330442.88],
+      ["на 30.09.2026 задолженность 517 309 230,15"],
+      ["Сальдо конечное", null, null, 26306875.68],
+    ];
+    const map = detectColumns(matrix);
+    assert.ok(map);
+    const excel = parseExcelMatrix(matrix, map);
+    assert.equal(excel.lines.length, 1);
+    assert.equal(excel.lines[0]?.docNumber, "1800065755-254");
+    assert.equal(excel.lines[0]?.credit, 1330442.88);
+
+    const scan = parseOcrWords(
+      [
+        word("Дата", 200, 40),
+        word("Документ", 40, 70),
+        word("дебету", 400, 70),
+        word("кредиту", 620, 70),
+        word("1800065755-254", 40, 120),
+        word("24.09.2025", 200, 120),
+        word("1330442,88", 400, 120),
+      ],
+      "",
+    );
+    const result = compareActs(excel, scan);
+    assert.equal(result.reports[0]?.mirror, true);
+    assert.equal(result.reports[0]?.pairs[0]?.status, "match");
   });
 });
 

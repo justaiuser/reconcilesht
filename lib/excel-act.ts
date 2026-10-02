@@ -14,6 +14,7 @@ import {
   extractPeriod,
   normalizeHeader,
   parseDate,
+  summaryKind,
 } from "@/lib/text";
 
 export function emptySummary(): ActSummary {
@@ -164,14 +165,6 @@ export function blankMap(columnCount = 4): ColumnMap {
   };
 }
 
-function summaryKind(text: string): "opening" | "turnover" | "closing" | null {
-  const normalized = normalizeHeader(text);
-  if (/сальдо началь/.test(normalized)) return "opening";
-  if (/обороты/.test(normalized)) return "turnover";
-  if (/сальдо конеч/.test(normalized)) return "closing";
-  return null;
-}
-
 function applySummary(
   summary: ActSummary,
   kind: "opening" | "turnover" | "closing",
@@ -203,8 +196,8 @@ function readSideLine(
   const date = parseDate(dateRaw);
   const description = documentRaw;
   const docNumber = docFromDocumentCell(documentRaw) ?? docFromDocumentCell(dateRaw);
-  if (!date && !docNumber && debit == null && credit == null) return null;
-  if (!date && debit == null && credit == null) return null;
+  if (debit == null && credit == null) return null;
+  if (!date && !docNumber) return null;
   return {
     id: `${side}-${index}`,
     side,
