@@ -52,6 +52,7 @@ export async function recognizePdf(
     await worker.setParameters({
       tessedit_pageseg_mode: tesseract.PSM.AUTO,
       preserve_interword_spaces: "1",
+      user_defined_dpi: "300",
     });
 
     const pages: OcrWord[][] = [];

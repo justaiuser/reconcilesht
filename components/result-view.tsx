@@ -35,7 +35,7 @@ export function ResultView({
   const [exportError, setExportError] = useState<string | null>(null);
 
   return (
-    <section className="grid gap-4">
+    <section className="grid min-w-0 gap-4 [&>*]:min-w-0">
       <div className="rounded-2xl border border-border bg-card p-4 sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -124,7 +124,7 @@ function ReportCard({ report }: { report: SideReport }) {
     filter === "all" ? report.pairs : filter === "matches" ? matches : problems;
 
   return (
-    <article className="rounded-2xl border border-border bg-card p-4 sm:p-5">
+    <article className="min-w-0 rounded-2xl border border-border bg-card p-4 sm:p-5">
       <h3 className="text-base font-semibold">{report.title}</h3>
       {report.mirror ? (
         <p className="mt-1 text-sm text-muted-foreground">

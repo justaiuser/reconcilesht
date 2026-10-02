@@ -52,11 +52,11 @@ export function FileDrop({
         </span>
         <div className="min-w-0">
           <h2 className="text-base font-semibold">{title}</h2>
-          <p className="mt-1 text-sm leading-6 text-muted-foreground">{hint}</p>
+          <p className="mt-1 text-sm leading-6 wrap-break-word text-muted-foreground">{hint}</p>
         </div>
       </div>
       {fileName ? (
-        <p className="mt-4 truncate text-sm font-medium">
+        <p className="mt-4 truncate text-sm font-medium" title={fileName ?? undefined}>
           {fileName}
           {meta ? <span className="font-normal text-muted-foreground"> · {meta}</span> : null}
         </p>

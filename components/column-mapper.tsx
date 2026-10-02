@@ -9,7 +9,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import type { Cell, ColumnMap, ParsedAct, SideColumns } from "@/lib/types";
-import { mapFromHeaderRow } from "@/lib/excel-act";
+import { headerCells, mapFromHeaderRow } from "@/lib/excel-act";
 import { cellText, formatDateRu, formatMoney, lineLabel } from "@/lib/text";
 
 type ColumnMapperProps = {
@@ -32,8 +32,9 @@ export function ColumnMapper({
   onMap,
 }: ColumnMapperProps) {
   const columnCount = rows.reduce((max, row) => Math.max(max, row.length), 0);
+  const header = headerCells(rows, map.headerRow);
   const options = Array.from({ length: columnCount }, (_, index) => {
-    const label = cellText(rows[map.headerRow]?.[index]) || `Столбец ${index + 1}`;
+    const label = cellText(header[index]) || `Столбец ${index + 1}`;
     return { index, label: `${index + 1}. ${label}` };
   });
   const headerChoices = rows
@@ -55,7 +56,7 @@ export function ColumnMapper({
   };
 
   return (
-    <section className="rounded-2xl border border-border bg-card p-4 sm:p-5">
+    <section className="min-w-0 rounded-2xl border border-border bg-card p-4 sm:p-5">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h2 className="text-base font-semibold">Колонки Excel</h2>
@@ -68,6 +69,7 @@ export function ColumnMapper({
           <label className="grid gap-1 text-sm">
             <span className="text-muted-foreground">Лист</span>
             <Select
+              items={sheetNames.map((name) => ({ value: name, label: name }))}
               value={sheetName}
               onValueChange={(value) => {
                 if (value) onSheet(value);
@@ -88,10 +90,14 @@ export function ColumnMapper({
         ) : null}
       </div>
 
-      <div className="mt-4 grid gap-3 sm:grid-cols-2">
-        <label className="grid gap-1 text-sm">
+      <div className="mt-4 grid min-w-0 gap-3 sm:grid-cols-2">
+        <label className="grid min-w-0 gap-1 text-sm">
           <span className="text-muted-foreground">Строка шапки</span>
           <Select
+            items={headerChoices.map((row) => ({
+              value: String(row.index),
+              label: `${row.index + 1}. ${trim(row.label, 80)}`,
+            }))}
             value={String(map.headerRow)}
             onValueChange={(value) => {
               if (!value) return;
@@ -218,11 +224,15 @@ function SideFields({
   return (
     <fieldset className="mt-4">
       <legend className="text-sm font-medium">{title}</legend>
-      <div className="mt-2 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="mt-2 grid min-w-0 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {fields.map((field) => (
-          <label key={field.key} className="grid gap-1 text-sm">
+          <label key={field.key} className="grid min-w-0 gap-1 text-sm">
             <span className="text-muted-foreground">{field.label}</span>
             <Select
+              items={[
+                { value: "none", label: "Не использовать" },
+                ...options.map((option) => ({ value: String(option.index), label: option.label })),
+              ]}
               value={columns[field.key] == null ? "none" : String(columns[field.key])}
               onValueChange={(value) =>
                 onChange(field.key, !value || value === "none" ? null : Number(value))

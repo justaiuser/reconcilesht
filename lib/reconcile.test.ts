@@ -33,6 +33,7 @@ describe("Excel акта сверки", () => {
     const matrix = buildExcelMatrix();
     const map = detectColumns(matrix);
     assert.ok(map);
+    assert.equal(map.headerRow, 5);
     assert.equal(map.ours.date, 0);
     assert.equal(map.ours.debit, 2);
     assert.equal(map.theirs?.date, 4);

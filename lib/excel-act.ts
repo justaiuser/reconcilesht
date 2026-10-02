@@ -114,19 +114,23 @@ function groupSides(
 export function detectColumns(matrix: Cell[][]): ColumnMap | null {
   let bestIndex = -1;
   let bestScore = 0;
+  let bestOwn = 0;
   const limit = Math.min(matrix.length, 40);
   for (let index = 0; index < limit; index += 1) {
-    const score = Math.max(
-      scoreHeaderRow(matrix[index]),
-      scoreHeaderRow(mergedHeader(matrix, index).row),
-    );
-    if (score > bestScore) {
+    const own = scoreHeaderRow(matrix[index]);
+    const score = Math.max(own, scoreHeaderRow(mergedHeader(matrix, index).row));
+    if (score > bestScore || (score === bestScore && own > bestOwn)) {
       bestScore = score;
+      bestOwn = own;
       bestIndex = index;
     }
   }
   if (bestIndex < 0) return null;
   return mapFromHeaderRow(matrix, bestIndex);
+}
+
+export function headerCells(matrix: Cell[][], headerRow: number): Cell[] {
+  return mergedHeader(matrix, headerRow).row;
 }
 
 export function mapFromHeaderRow(matrix: Cell[][], headerRow: number): ColumnMap | null {

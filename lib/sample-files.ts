@@ -26,58 +26,59 @@ export async function buildSampleFiles(): Promise<{ excel: File; pdf: File }> {
   };
 }
 
+async function loadActFont(): Promise<void> {
+  const regular = new FontFace("ActSans", "url(/fonts/LiberationSans-Regular.ttf)", { weight: "400" });
+  const bold = new FontFace("ActSans", "url(/fonts/LiberationSans-Bold.ttf)", { weight: "700" });
+  const faces = await Promise.all([regular.load(), bold.load()]);
+  for (const face of faces) document.fonts.add(face);
+}
+
 async function drawSamplePdf(): Promise<Blob> {
-  await document.fonts.load("600 34px Manrope");
-  await document.fonts.load("30px Manrope");
-  const width = 3400;
-  const height = 1680;
+  await loadActFont();
+  const width = 3200;
+  const height = 1560;
   const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
-  const context = canvas.getContext("2d");
+  const context = canvas.getContext("2d", { willReadFrequently: true });
   if (!context) throw new Error("Браузер не смог подготовить пример скана.");
 
   context.fillStyle = "#ffffff";
   context.fillRect(0, 0, width, height);
-  context.fillStyle = "#1c2430";
-  context.font = "600 48px Manrope, sans-serif";
-  context.fillText("Акт сверки взаимных расчетов", 70, 90);
-  context.font = "30px Manrope, sans-serif";
-  context.fillText(`за период: ${SAMPLE_PERIOD}`, 70, 145);
-  context.fillText(`между ${SAMPLE_PARTY_A} и ${SAMPLE_PARTY_B}`, 70, 190);
+  context.fillStyle = "#000000";
+  context.font = "700 54px ActSans, sans-serif";
+  context.fillText("Акт сверки взаимных расчетов", 70, 100);
+  context.font = "400 36px ActSans, sans-serif";
+  context.fillText(`за период: ${SAMPLE_PERIOD}`, 70, 164);
+  context.fillText(`между ${SAMPLE_PARTY_A} и ${SAMPLE_PARTY_B}`, 70, 216);
 
   const columns = [
-    { x: 70, w: 280, align: "left" as const },
-    { x: 370, w: 620, align: "left" as const },
-    { x: 1060, w: 280, align: "right" as const },
-    { x: 1440, w: 280, align: "right" as const },
-    { x: 1840, w: 280, align: "left" as const },
-    { x: 2140, w: 580, align: "left" as const },
-    { x: 2780, w: 250, align: "right" as const },
-    { x: 3100, w: 230, align: "right" as const },
+    { x: 70, w: 460, align: "left" as const },
+    { x: 550, w: 520, align: "left" as const },
+    { x: 1090, w: 280, align: "right" as const },
+    { x: 1390, w: 280, align: "right" as const },
+    { x: 1780, w: 280, align: "left" as const },
+    { x: 2080, w: 500, align: "left" as const },
+    { x: 2600, w: 260, align: "right" as const },
+    { x: 2880, w: 250, align: "right" as const },
   ];
 
-  context.font = "600 28px Manrope, sans-serif";
-  context.fillText(`По данным ${SAMPLE_PARTY_A}, руб.`, 70, 260);
-  context.fillText(`По данным ${SAMPLE_PARTY_B}, руб.`, 1840, 260);
+  context.font = "700 32px ActSans, sans-serif";
+  context.fillText(`По данным ${SAMPLE_PARTY_A}, руб.`, 70, 290);
+  context.fillText(`По данным ${SAMPLE_PARTY_B}, руб.`, 1780, 290);
 
-  let y = 330;
+  let y = 370;
   const paint = (cells: (string | null)[], bold = false) => {
-    context.strokeStyle = "#d5dbe3";
-    context.beginPath();
-    context.moveTo(70, y + 18);
-    context.lineTo(width - 70, y + 18);
-    context.stroke();
-    context.font = `${bold ? 600 : 400} 32px Manrope, sans-serif`;
-    context.fillStyle = "#1c2430";
+    context.font = `${bold ? 700 : 400} 40px ActSans, sans-serif`;
+    context.fillStyle = "#000000";
     cells.forEach((cell, index) => {
       if (!cell) return;
       const column = columns[index];
       const measured = context.measureText(cell).width;
       const x = column.align === "right" ? column.x + column.w - measured : column.x;
-      context.fillText(cell, x, y);
+      context.fillText(cell, Math.round(x), y);
     });
-    y += 72;
+    y += 96;
   };
 
   paint(["Дата", "Документ", "Дебет", "Кредит", "Дата", "Документ", "Дебет", "Кредит"], true);
@@ -119,6 +120,16 @@ async function drawSamplePdf(): Promise<Blob> {
     money(theirs.closingCredit),
   ]);
 
+  hardenInk(context, width, height);
+  context.strokeStyle = "#d7dde6";
+  context.lineWidth = 2;
+  for (let line = 322; line < y; line += 96) {
+    context.beginPath();
+    context.moveTo(70, line);
+    context.lineTo(width - 70, line);
+    context.stroke();
+  }
+
   const png = await new Promise<ArrayBuffer>((resolve, reject) => {
     canvas.toBlob(async (blob) => {
       if (!blob) {
@@ -136,6 +147,19 @@ async function drawSamplePdf(): Promise<Blob> {
   page.drawImage(image, { x: 0, y: 0, width: image.width, height: image.height });
   const bytes = await pdf.save();
   return new Blob([Uint8Array.from(bytes)], { type: "application/pdf" });
+}
+
+function hardenInk(context: CanvasRenderingContext2D, width: number, height: number): void {
+  const image = context.getImageData(0, 0, width, height);
+  const { data } = image;
+  for (let index = 0; index < data.length; index += 4) {
+    const tone = data[index] * 0.2126 + data[index + 1] * 0.7152 + data[index + 2] * 0.0722;
+    const ink = tone < 186 ? 0 : 255;
+    data[index] = ink;
+    data[index + 1] = ink;
+    data[index + 2] = ink;
+  }
+  context.putImageData(image, 0, 0);
 }
 
 function rowCells(left?: SampleLine, right?: SampleLine): (string | null)[] {

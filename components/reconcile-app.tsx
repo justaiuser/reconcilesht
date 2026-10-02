@@ -196,7 +196,7 @@ export function ReconcileApp() {
         </div>
       </header>
 
-      <main className="mx-auto grid max-w-6xl gap-5 px-4 py-5 sm:px-6 sm:py-6">
+      <main className="mx-auto grid max-w-6xl gap-5 px-4 py-5 sm:px-6 sm:py-6 [&>*]:min-w-0">
         <div className="grid gap-4 lg:grid-cols-2">
           <FileDrop
             title="Скан акта"
