@@ -5,7 +5,7 @@ import { detectColumns, emptySummary, parseExcelMatrix } from "./excel-act";
 import { groupLines, parseOcrDocuments, parseOcrPages, parseOcrWords } from "./ocr-table";
 import { pageStrips } from "./page-strips";
 import { compareActs, compareDocuments } from "./compare";
-import { parseQwenResponse, qwenPagesToRecognition, type QwenPage } from "./qwen-act";
+import { QWEN_PROMPT, looksLooping, parseQwenResponse, qwenPagesToRecognition, type QwenPage } from "./qwen-act";
 import { chooseQwenModel } from "./qwen-ollama";
 import { buildExcelMatrix, buildSampleScanAct } from "./sample-data";
 import type { ActLine, ParsedAct, OcrWord } from "./types";
@@ -403,7 +403,8 @@ describe("одна колонка Excel и две колонки ответа Qw
     );
     const recognized = qwenPagesToRecognition([page]);
     assert.equal(recognized.act.lines.some((line) => /сальдо/i.test(line.description)), false);
-    assert.equal(recognized.act.warnings.some((warning) => warning.includes("сальдо")), true);
+    assert.equal(recognized.act.summary.closingDebit, 471487.25);
+    assert.equal(recognized.act.theirsSummary?.closingCredit, 471487.25);
     assert.match(recognized.act.rawText, /№1800065755-254/);
 
     const excel = bareAct([
@@ -421,6 +422,51 @@ describe("одна колонка Excel и две колонки ответа Qw
   });
 });
 
+describe("ошибки маленькой модели", () => {
+  it("дочитывает зациклившийся ответ и оставляет одну строку из повторов", () => {
+    const row = '{"date":"01.10.2025","document":"Акт сверки","number":"26 306 875,68","leftDebit":26306875.68,"leftCredit":0,"rightDebit":0,"rightCredit":0}';
+    const invoiceRow = '{"date":"24.09.2025","document":"Исходящие счета","number":"1800065755-254","leftDebit":1330442.88,"leftCredit":null,"rightDebit":null,"rightCredit":null}';
+    const looped = `{"newAct":true,"left":{"closingDebit":26306875.68},"right":{},"rows":[${invoiceRow},${Array(6).fill(row).join(",")},{"date":"01.1`;
+    assert.equal(looksLooping(looped.repeat(2)), true);
+    const page = parseQwenResponse(looped);
+    assert.equal(page.rows.length, 1);
+    assert.equal(page.rows[0]?.number, "1800065755-254");
+    assert.equal(page.left.closingDebit, 26306875.68);
+
+    const repeated = parseQwenResponse(
+      JSON.stringify({ newAct: true, rows: Array(4).fill(JSON.parse(invoiceRow)) }),
+    );
+    assert.equal(repeated.rows.length, 1);
+    const twice = parseQwenResponse(JSON.stringify({ newAct: true, rows: Array(2).fill(JSON.parse(invoiceRow)) }));
+    assert.equal(twice.rows.length, 2);
+  });
+
+  it("берёт входящее сальдо с первой страницы, а итоги — с последней", () => {
+    const first = parseQwenResponse(
+      JSON.stringify({
+        newAct: true,
+        left: { openingDebit: 0, openingCredit: 0, turnoverDebit: 0, closingDebit: 0 },
+        rows: [JSON.parse('{"date":"24.09.2025","document":"Исходящие счета","number":"1800065755-254","leftDebit":1330442.88}')],
+      }),
+    );
+    const totals = parseQwenResponse(
+      JSON.stringify({
+        newAct: true,
+        left: { openingDebit: 26306875.68, turnoverDebit: 26306875.68, closingDebit: 26306875.68 },
+        right: { openingDebit: 0, closingDebit: 0 },
+        rows: [],
+      }),
+    );
+    const { act, documents } = qwenPagesToRecognition([first, totals]);
+    assert.equal(documents.length, 1);
+    assert.equal(act.summary.openingDebit, 0);
+    assert.equal(act.summary.turnoverDebit, 26306875.68);
+    assert.equal(act.summary.closingDebit, 26306875.68);
+    assert.equal(act.theirsSummary, null);
+    assert.equal(act.twoSided, false);
+  });
+});
+
 describe("выбор модели Qwen", () => {
   it("предпочитает instruct и иначе берёт любую qwen3-vl", () => {
     assert.equal(
@@ -433,6 +479,14 @@ describe("выбор модели Qwen", () => {
     );
     assert.equal(chooseQwenModel(["llama3", "qwen3-vl:2b"], "qwen3-vl:2b-instruct"), "qwen3-vl:2b");
     assert.equal(chooseQwenModel(["llama3"], "qwen3-vl:2b-instruct"), null);
+    assert.equal(
+      chooseQwenModel(["qwen3-vl:2b-instruct", "qwen3-vl:8b", "qwen3-vl:8b-instruct", "qwen3-vl:4b-instruct"], undefined),
+      "qwen3-vl:8b-instruct",
+    );
+  });
+
+  it("не даёт модели готовых номеров и сумм, которые можно переписать", () => {
+    assert.equal(/\d{4,}/.test(QWEN_PROMPT), false);
   });
 });
 

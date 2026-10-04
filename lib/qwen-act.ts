@@ -1,6 +1,6 @@
 import type { ActLine, ActSummary, ParsedAct } from "@/lib/types";
 import { emptySummary } from "@/lib/excel-act";
-import { extractDocNumber, parseDate, parseMoney, round2 } from "@/lib/text";
+import { extractDocNumber, parseDate, parseMoney, round2, summaryKind } from "@/lib/text";
 
 export type QwenPage = {
   newAct: boolean;
@@ -23,19 +23,101 @@ export type QwenRow = {
   rightCredit: number | null;
 };
 
-export const QWEN_PROMPT = `Это страница акта сверки. Верни только JSON без пояснений:
-{"newAct":true,"partyLeft":"","partyRight":"","period":"","rows":[{"date":"24.09.2025","document":"Исходящие счета","number":"1800065755-254","leftDebit":1330442.88,"leftCredit":null,"rightDebit":null,"rightCredit":null}],"left":{"openingDebit":null,"openingCredit":null,"turnoverDebit":null,"turnoverCredit":null,"closingDebit":null,"closingCredit":null},"right":{"openingDebit":null,"openingCredit":null,"turnoverDebit":null,"turnoverCredit":null,"closingDebit":null,"closingCredit":null}}
-number — номер счета из своей колонки, целиком, как 1800065755-254. document — название операции без номера. Если колонка сумм одна, заполни только left, а right оставь null и не копируй сумму во вторую колонку. Если колонки две, левая сумма идет в left, правая в right. Строки «Сальдо», «Входящее сальдо» и «Исходящее сальдо» в rows не пиши, положи их в left и right. newAct равен true только если страница начинается с «Акт сверки». Суммы — числа с точкой, пустая ячейка — null. Не пропускай строки и не складывай соседние суммы.`;
+export const QWEN_PROMPT = `Перед тобой страница акта сверки взаимных расчетов. Перепиши таблицу в JSON.
+
+Правила:
+- Перепиши каждую строку таблицы по порядку сверху вниз, ровно один раз. Ничего не придумывай и не повторяй.
+- date — дата строки, как на картинке.
+- document — название операции, как написано в строке.
+- number — номер документа из этой строки, все цифры и дефисы подряд. Если номера нет, null.
+- В акте бывает одна таблица сумм или две рядом: слева одна организация, справа другая. Суммы левой таблицы — leftDebit и leftCredit. Суммы правой — rightDebit и rightCredit. Если таблица одна, right-поля всегда null.
+- Сумму пиши числом: без пробелов между разрядами, копейки через точку. Пустая ячейка — null.
+- Переписывай только печатный текст. Рукописные пометки, подписи и печати не переписывай.
+- Сальдо и обороты не пиши в rows. Входящее или начальное сальдо — opening, обороты и «Итого за период» — turnover, исходящее или конечное сальдо — closing. Суммы левой таблицы — в left, правой — в right.
+- partyLeft и partyRight — названия организаций из шапки, period — период акта, иначе null.
+- newAct — true, если вверху страницы заголовок «Акт сверки» и шапка с организациями. Если страница начинается с «Лист 2», «Лист 3» или продолжает таблицу, false.`;
+
+const MONEY = { type: ["number", "null"] };
+const TEXT = { type: ["string", "null"] };
+const SUMMARY_SCHEMA = {
+  type: "object",
+  properties: {
+    openingDebit: MONEY,
+    openingCredit: MONEY,
+    turnoverDebit: MONEY,
+    turnoverCredit: MONEY,
+    closingDebit: MONEY,
+    closingCredit: MONEY,
+  },
+};
+
+export const QWEN_SCHEMA = {
+  type: "object",
+  properties: {
+    newAct: { type: "boolean" },
+    partyLeft: TEXT,
+    partyRight: TEXT,
+    period: TEXT,
+    left: SUMMARY_SCHEMA,
+    right: SUMMARY_SCHEMA,
+    rows: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          date: TEXT,
+          document: { type: "string" },
+          number: TEXT,
+          leftDebit: MONEY,
+          leftCredit: MONEY,
+          rightDebit: MONEY,
+          rightCredit: MONEY,
+        },
+        required: ["date", "document", "number", "leftDebit", "leftCredit", "rightDebit", "rightCredit"],
+      },
+    },
+  },
+  required: ["newAct", "left", "right", "rows"],
+};
+
+export function looksLooping(content: string): boolean {
+  if (content.length < 1600) return false;
+  const tail = content.slice(-400).replace(/\s+/g, " ");
+  const flat = content.replace(/\s+/g, " ");
+  let count = 0;
+  for (let index = flat.indexOf(tail); index >= 0; index = flat.indexOf(tail, index + 1)) {
+    count += 1;
+    if (count >= 3) return true;
+  }
+  return false;
+}
+
+function parseLenient(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    // The model may stop mid-row (length limit or a loop we cut off). Keep every complete row.
+    for (let end = text.lastIndexOf("}"), tries = 0; end > 0 && tries < 400; end = text.lastIndexOf("}", end - 1), tries += 1) {
+      for (const tail of ["]}", "}", "]}}", ""]) {
+        try {
+          return JSON.parse(text.slice(0, end + 1) + tail);
+        } catch {
+          // try a shorter prefix
+        }
+      }
+    }
+    throw new Error("unparsable");
+  }
+}
 
 export function parseQwenResponse(raw: string): QwenPage {
   const start = raw.indexOf("{");
-  const end = raw.lastIndexOf("}");
-  if (start < 0 || end <= start) {
+  if (start < 0) {
     throw new Error("Модель не вернула таблицу акта. Повторите чтение страницы.");
   }
   let data: unknown;
   try {
-    data = JSON.parse(raw.slice(start, end + 1));
+    data = parseLenient(raw.slice(start).replace(/\s*```\s*$/, ""));
   } catch {
     throw new Error("Модель оборвала таблицу. Повторите чтение страницы.");
   }
@@ -49,7 +131,7 @@ export function parseQwenResponse(raw: string): QwenPage {
     partyLeft: textOrNull(record.partyLeft ?? record.partyA),
     partyRight: textOrNull(record.partyRight ?? record.partyB),
     period: textOrNull(record.period),
-    rows: rows.map(normalizeRow),
+    rows: dropRepeats(rows.map(normalizeRow)).filter((row) => !/акт\s+сверки/i.test(row.document)),
     left: normalizeSummary(record.left),
     right: normalizeSummary(record.right),
     note: textOrNull(record.note),
@@ -60,7 +142,8 @@ export function qwenPagesToRecognition(pages: QwenPage[]): { act: ParsedAct; doc
   const documents: ParsedAct[] = [];
   pages.forEach((page, index) => {
     const next = pageToAct(page, `${index}`);
-    if (documents.length === 0 || (index > 0 && page.newAct)) documents.push(next);
+    const startsAct = index > 0 && page.newAct && next.lines.length > 0;
+    if (documents.length === 0 || startsAct) documents.push(next);
     else appendAct(documents[documents.length - 1], next);
   });
   if (documents.length === 0) {
@@ -95,19 +178,22 @@ function cloneAct(act: ParsedAct): ParsedAct {
 
 function pageToAct(page: QwenPage, prefix: string): ParsedAct {
   const lines: ActLine[] = [];
-  let skippedBalance = false;
+  const left = { ...page.left };
+  const right = { ...page.right };
   page.rows.forEach((row, index) => {
-    if (/сальдо/i.test(row.document)) {
-      skippedBalance = true;
+    const balance = balanceKind(row.document, lines.length === 0);
+    if (balance) {
+      applyBalance(left, balance, row.leftDebit, row.leftCredit);
+      applyBalance(right, balance, row.rightDebit, row.rightCredit);
       return;
     }
     pushSide(lines, "ours", row, row.leftDebit, row.leftCredit, `${prefix}-l-${index}`);
     pushSide(lines, "theirs", row, row.rightDebit, row.rightCredit, `${prefix}-r-${index}`);
   });
-  const rightHasSummary = hasAmount(page.right);
+  const rightHasSummary =
+    hasAmount(right) && (lines.some((line) => line.side === "theirs") || !echoesLeft(right, left));
   const warnings: string[] = [];
   if (page.rows.length === 0) warnings.push("На странице модель не нашла строк таблицы.");
-  if (skippedBalance) warnings.push("Строку сальдо не сверяю как документ.");
   if (page.note) warnings.push(page.note);
   return {
     title: null,
@@ -115,13 +201,39 @@ function pageToAct(page: QwenPage, prefix: string): ParsedAct {
     partyA: page.partyLeft,
     partyB: page.partyRight,
     lines,
-    summary: page.left,
-    theirsSummary: rightHasSummary || lines.some((line) => line.side === "theirs") ? page.right : null,
+    summary: left,
+    theirsSummary: rightHasSummary || lines.some((line) => line.side === "theirs") ? right : null,
     warnings,
     confidence: null,
     rawText: rawText(page),
     twoSided: lines.some((line) => line.side === "theirs") || rightHasSummary,
   };
+}
+
+function echoesLeft(right: ActSummary, left: ActSummary): boolean {
+  return (Object.keys(right) as (keyof ActSummary)[]).every((key) => {
+    const value = right[key];
+    return value == null || value === 0 || value === left[key];
+  });
+}
+
+function balanceKind(document: string, beforeLines: boolean): "opening" | "turnover" | "closing" | null {
+  const kind = summaryKind(document);
+  if (kind) return kind;
+  if (!/сальдо/i.test(document)) return null;
+  return beforeLines ? "opening" : "closing";
+}
+
+function applyBalance(
+  summary: ActSummary,
+  kind: "opening" | "turnover" | "closing",
+  debit: number | null,
+  credit: number | null,
+) {
+  const debitKey = `${kind}Debit` as keyof ActSummary;
+  const creditKey = `${kind}Credit` as keyof ActSummary;
+  if (debit != null && summary[debitKey] == null) summary[debitKey] = debit;
+  if (credit != null && summary[creditKey] == null) summary[creditKey] = credit;
 }
 
 function appendAct(target: ParsedAct, extra: ParsedAct): ParsedAct {
@@ -164,13 +276,33 @@ function pushSide(
   });
 }
 
+// Three or more identical rows in a row is the model looping, not real data: keep one.
+function dropRepeats(rows: QwenRow[]): QwenRow[] {
+  const keys = rows.map((row) => JSON.stringify(row));
+  return rows.filter((_, index) => {
+    if (index === 0 || keys[index] !== keys[index - 1]) return true;
+    let start = index;
+    while (start > 0 && keys[start - 1] === keys[index]) start -= 1;
+    let end = index;
+    while (end + 1 < keys.length && keys[end + 1] === keys[index]) end += 1;
+    return end - start + 1 < 3;
+  });
+}
+
+function docNumberText(value: unknown): string | null {
+  const text = textOrNull(value);
+  if (!text) return null;
+  if (/^\d{1,3}(?:[\s\u00a0]\d{3})+(?:[,.]\d{2})?$|^\d+[,.]\d{2}$/.test(text)) return null;
+  return text;
+}
+
 function normalizeRow(value: unknown): QwenRow {
   const row = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
   const document = textOrNull(row.document ?? row.description) ?? "";
   return {
     date: textOrNull(row.date),
     document,
-    number: textOrNull(row.number ?? row.docNumber),
+    number: docNumberText(row.number ?? row.docNumber),
     leftDebit: asMoney(row.leftDebit ?? row.debit),
     leftCredit: asMoney(row.leftCredit ?? row.credit),
     rightDebit: asMoney(row.rightDebit),
@@ -206,9 +338,14 @@ function hasAmount(summary: ActSummary): boolean {
   return Object.values(summary).some((value) => value != null);
 }
 
+// The opening balance is printed on the first page of an act and the totals on the last one.
+// The model fills fields it cannot see with 0 or a guess, so trust each figure only from its page.
 function fillSummary(target: ActSummary, extra: ActSummary) {
   (Object.keys(target) as (keyof ActSummary)[]).forEach((key) => {
-    if (target[key] == null && extra[key] != null) target[key] = extra[key];
+    const value = extra[key];
+    if (value == null) return;
+    if (target[key] == null) target[key] = value;
+    else if (!key.startsWith("opening") && value !== 0) target[key] = value;
   });
 }
 

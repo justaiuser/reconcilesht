@@ -31,7 +31,7 @@ export async function recognizeWithQwen(
       const page = await pdf.getPage(pageNumber);
       const unscaled = page.getViewport({ scale: 1 });
       const longest = Math.max(unscaled.width, unscaled.height);
-      const viewport = page.getViewport({ scale: Math.min(2, 1600 / longest) });
+      const viewport = page.getViewport({ scale: Math.min(3, 2000 / longest) });
       const canvas = window.document.createElement("canvas");
       canvas.width = Math.ceil(viewport.width);
       canvas.height = Math.ceil(viewport.height);
@@ -73,7 +73,7 @@ function canvasToBase64(canvas: HTMLCanvasElement): Promise<string> {
         reader.readAsDataURL(blob);
       },
       "image/jpeg",
-      0.82,
+      0.9,
     );
   });
 }
