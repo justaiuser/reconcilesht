@@ -78,9 +78,23 @@ export type SideReport = {
 export type CompareMode = "auto" | "both" | "ours" | "theirs";
 export type MirrorMode = "auto" | "on" | "off";
 
+export type CompareLabels = {
+  left: string;
+  right: string;
+  onlyLeft: string;
+  onlyRight: string;
+  debitLeft: string;
+  creditLeft: string;
+  debitRight: string;
+  creditRight: string;
+  mirrorHint: string;
+};
+
 export type CompareResult = {
   reports: SideReport[];
   interpretation: string;
+  labels: CompareLabels;
+  columnsOnly: boolean;
 };
 
 export type OcrWord = {

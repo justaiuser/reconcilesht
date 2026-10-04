@@ -98,6 +98,7 @@ export function extractDocNumber(text: string): string | null {
   if (!text.trim()) return null;
   const patterns = [
     /№\s*([0-9a-zа-яё][0-9a-zа-яё/-]{0,24})/i,
+    /\(\s*(\d{1,6})\s+от(?:\s|$)/i,
     /(?:п\s*\/\s*п|пп)\s*№?\s*(\d{1,8})/i,
     /(?:упд|накладн\w*|акт|счет-фактур\w*|счёт-фактур\w*|счет|счёт)\s*№?\s*(\d{1,8})/i,
   ];

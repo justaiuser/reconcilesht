@@ -7,7 +7,7 @@ import { ColumnMapper } from "@/components/column-mapper";
 import { FileDrop } from "@/components/file-drop";
 import { ResultView } from "@/components/result-view";
 import { ThemeToggle } from "@/components/theme-toggle";
-import { compareActs } from "@/lib/compare";
+import { compareActs, compareDocuments } from "@/lib/compare";
 import { blankMap, detectColumns, parseExcelMatrix } from "@/lib/excel-act";
 import { countPdfPages, recognizePdf } from "@/lib/recognize";
 import { buildSampleFiles } from "@/lib/sample-files";
@@ -34,26 +34,35 @@ export function ReconcileApp() {
   const [pdfError, setPdfError] = useState<string | null>(null);
 
   const [scanAct, setScanAct] = useState<ParsedAct | null>(null);
+  const [documents, setDocuments] = useState<ParsedAct[] | null>(null);
+  const [singleFile, setSingleFile] = useState(false);
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const [mode, setMode] = useState<CompareMode>("auto");
   const [mirror, setMirror] = useState<MirrorMode>("auto");
   const [sampleBusy, setSampleBusy] = useState(false);
   const cancelRef = useRef(false);
+  const singleFileRef = useRef(false);
+
+  function setSingle(value: boolean) {
+    singleFileRef.current = value;
+    setSingleFile(value);
+  }
 
   const sheet = sheets.find((item) => item.name === sheetName) ?? null;
   const excelAct = useMemo(
     () => (sheet && map ? parseExcelMatrix(sheet.rows, map) : null),
     [sheet, map],
   );
-  const result = useMemo(
-    () => (excelAct && scanAct ? compareActs(excelAct, scanAct, { mode, mirror }) : null),
-    [excelAct, scanAct, mode, mirror],
-  );
+  const result = useMemo(() => {
+    if (singleFile) return documents ? compareDocuments(documents, { mirror }) : null;
+    return excelAct && scanAct ? compareActs(excelAct, scanAct, { mode, mirror }) : null;
+  }, [singleFile, documents, excelAct, scanAct, mode, mirror]);
   const working = phase.kind === "working";
 
   async function loadExcel(file: File) {
     setExcelError(null);
     setScanAct(null);
+    setDocuments(null);
     setPhase({ kind: "idle" });
     if (!file.name.toLowerCase().endsWith(".xlsx")) {
       setExcelName(null);
@@ -94,6 +103,7 @@ export function ReconcileApp() {
   async function loadPdf(file: File) {
     setPdfError(null);
     setScanAct(null);
+    setDocuments(null);
     setPhase({ kind: "idle" });
     if (file.type && file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
       setPdfFile(null);
@@ -126,9 +136,10 @@ export function ReconcileApp() {
     if (!pdfFile || working) return;
     cancelRef.current = false;
     setScanAct(null);
+    setDocuments(null);
     setPhase({ kind: "working", label: "Готовим чтение скана…", percent: 2 });
     try {
-      const act = await recognizePdf(
+      const recognized = await recognizePdf(
         pdfFile,
         (progress) => {
           if (!cancelRef.current) setPhase({ kind: "working", ...progress });
@@ -138,7 +149,16 @@ export function ReconcileApp() {
         },
       );
       if (cancelRef.current) return;
-      setScanAct(act);
+      setScanAct(recognized.act);
+      setDocuments(recognized.documents);
+      if (singleFileRef.current && !recognized.documents.some((act) => act.twoSided)) {
+        setPhase({
+          kind: "error",
+          message:
+            "В скане не нашлись две колонки. Снимите галочку «Прикрепить один файл» и приложите Excel.",
+        });
+        return;
+      }
       setPhase({ kind: "done" });
     } catch (error) {
       if (cancelRef.current) {
@@ -154,6 +174,7 @@ export function ReconcileApp() {
     setExcelError(null);
     setPdfError(null);
     try {
+      setSingle(false);
       const sample = await buildSampleFiles();
       await loadExcel(sample.excel);
       await loadPdf(sample.pdf);
@@ -176,6 +197,8 @@ export function ReconcileApp() {
     setPdfPages(null);
     setPdfError(null);
     setScanAct(null);
+    setDocuments(null);
+    setSingle(false);
     setPhase({ kind: "idle" });
     setMode("auto");
     setMirror("auto");
@@ -188,8 +211,9 @@ export function ReconcileApp() {
           <div>
             <h1 className="text-xl font-semibold tracking-tight">Сверка актов</h1>
             <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
-              Скан акта сверки и файл из учётной программы. Документы читаются в этом
-              браузере и никуда не отправляются.
+              Скан акта сверки и файл из учётной программы. Если в скане уже две
+              колонки, Excel не нужен. Документы читаются в этом браузере и никуда не
+              отправляются.
             </p>
           </div>
           <ThemeToggle />
@@ -197,28 +221,54 @@ export function ReconcileApp() {
       </header>
 
       <main className="mx-auto grid max-w-6xl gap-5 px-4 py-5 sm:px-6 sm:py-6 [&>*]:min-w-0">
-        <div className="grid gap-4 lg:grid-cols-2">
+        <label className="flex max-w-3xl items-start gap-3 text-sm leading-6">
+          <input
+            type="checkbox"
+            className="mt-1 size-4 accent-primary"
+            checked={singleFile}
+            disabled={working || sampleBusy}
+            onChange={(event) => {
+              setSingle(event.target.checked);
+              setPhase((current) => (current.kind === "error" ? { kind: "idle" } : current));
+            }}
+          />
+          <span>
+            <span className="font-medium">Прикрепить один файл</span>
+            <span className="mt-0.5 block text-muted-foreground">
+              В скане уже две колонки: слева одна компания, справа другая. Программа
+              сравнит их между собой, Excel прикладывать не нужно.
+            </span>
+          </span>
+        </label>
+
+        <div className={singleFile ? "grid gap-4" : "grid gap-4 lg:grid-cols-2"}>
           <FileDrop
             title="Скан акта"
-            hint="PDF, в котором страницы — изображения. Текст внутри файла не обязателен."
+            hint={
+              singleFile
+                ? "Один PDF, в котором слева и справа уже стоят обе компании."
+                : "PDF, в котором страницы — изображения. Текст внутри файла не обязателен."
+            }
             accept="application/pdf,.pdf"
             fileName={pdfName}
             meta={pdfPages == null ? null : pagesLabel(pdfPages)}
             disabled={working || sampleBusy}
             onFile={loadPdf}
           />
-          <FileDrop
-            title="Акт из программы"
-            hint="Книга Excel .xlsx, как её выгружает учётная программа."
-            accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            fileName={excelName}
-            disabled={working || sampleBusy}
-            onFile={loadExcel}
-          />
+          {singleFile ? null : (
+            <FileDrop
+              title="Акт из программы"
+              hint="Книга Excel .xlsx, как её выгружает учётная программа."
+              accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              fileName={excelName}
+              disabled={working || sampleBusy}
+              onFile={loadExcel}
+            />
+          )}
         </div>
 
         {pdfError ? <p className="text-sm text-destructive">{pdfError}</p> : null}
-        {excelError ? <p className="text-sm text-destructive">{excelError}</p> : null}
+        {!singleFile && excelError ? <p className="text-sm text-destructive">{excelError}</p> : null}
         {pdfPages != null && pdfPages > 8 ? (
           <p className="text-sm leading-6 text-muted-foreground">
             В скане {pagesLabel(pdfPages)}. Чтение займёт несколько минут, и компьютер
@@ -226,7 +276,7 @@ export function ReconcileApp() {
           </p>
         ) : null}
 
-        {sheet && map && excelAct ? (
+        {!singleFile && sheet && map && excelAct ? (
           <ColumnMapper
             rows={sheet.rows}
             map={map}
@@ -239,7 +289,11 @@ export function ReconcileApp() {
         ) : null}
 
         <div className="flex flex-wrap items-center gap-2">
-          <Button type="button" disabled={!pdfFile || !excelAct || working || sampleBusy} onClick={compare}>
+          <Button
+            type="button"
+            disabled={!pdfFile || working || sampleBusy || (!singleFile && !excelAct)}
+            onClick={compare}
+          >
             {working ? <LoaderCircle className="animate-spin" /> : null}
             Сравнить
           </Button>
@@ -294,7 +348,7 @@ export function ReconcileApp() {
           </p>
         ) : null}
 
-        {result && scanAct ? (
+        {result && scanAct && phase.kind !== "error" ? (
           <ResultView
             result={result}
             mode={mode}

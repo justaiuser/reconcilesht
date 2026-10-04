@@ -2,8 +2,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { parseMoney, parseDate, extractDocNumber, docFromDocumentCell, normalizeDoc } from "./text";
 import { detectColumns, parseExcelMatrix } from "./excel-act";
-import { parseOcrWords } from "./ocr-table";
-import { compareActs } from "./compare";
+import { parseOcrDocuments, parseOcrPages, parseOcrWords } from "./ocr-table";
+import { compareActs, compareDocuments } from "./compare";
 import { buildExcelMatrix, buildSampleScanAct } from "./sample-data";
 import type { OcrWord } from "./types";
 
@@ -25,6 +25,7 @@ describe("деньги и даты", () => {
     assert.equal(extractDocNumber("Реализация №15"), "15");
     assert.equal(extractDocNumber("Оплата п/п №42"), "42");
     assert.equal(normalizeDoc("015"), normalizeDoc("15"));
+    assert.equal(extractDocNumber("Продажа (1 от 12.01.2026)"), "1");
     assert.equal(docFromDocumentCell("1800065755-254"), "1800065755-254");
     assert.equal(docFromDocumentCell("1800065755 1800065755-254"), "1800065755-254");
   });
@@ -192,7 +193,142 @@ describe("сравнение", () => {
     assert.equal(result.reports[0]?.mirror, true);
     assert.equal(result.reports[0]?.pairs[0]?.status, "match");
   });
+
+  it("сверяет левую колонку скана с правой без Excel", () => {
+    const act = parseOcrWords(
+      [
+        word("Дата", 40, 80),
+        word("Документ", 180, 80),
+        word("Дебет", 420, 80),
+        word("Кредит", 620, 80),
+        word("Дата", 820, 80),
+        word("Документ", 980, 80),
+        word("Дебет", 1240, 80),
+        word("Кредит", 1460, 80),
+        word("12.01.2026", 40, 140),
+        word("Продажа", 180, 140),
+        word("№1", 280, 140),
+        word("471487,25", 400, 140),
+        word("12.01.2026", 820, 140),
+        word("Приход", 980, 140),
+        word("№1", 1100, 140),
+        word("471487,25", 1440, 140),
+        word("20.01.2026", 40, 190),
+        word("Продажа", 180, 190),
+        word("№2", 280, 190),
+        word("1000,00", 400, 190),
+        word("20.01.2026", 820, 190),
+        word("Приход", 980, 190),
+        word("№2", 1100, 190),
+        word("900,00", 1440, 190),
+      ],
+      "",
+    );
+    const result = compareDocuments([act]);
+    assert.ok(result);
+    assert.equal(result.columnsOnly, true);
+    assert.equal(result.labels.left, "Левая колонка");
+    assert.equal(result.reports.length, 1);
+    assert.equal(result.reports[0]?.mirror, true);
+    assert.equal(result.reports[0]?.title, "Левая и правая колонки");
+    const first = result.reports[0]?.pairs.find((pair) => pair.excel?.docNumber === "1");
+    const second = result.reports[0]?.pairs.find((pair) => pair.excel?.docNumber === "2");
+    assert.equal(first?.status, "match");
+    assert.equal(second?.status, "amount");
+    assert.equal(second?.notes[0], "Дебет левой колонки не равен кредиту правой");
+  });
 });
+
+describe("две колонки в одном скане", () => {
+  it("делит стороны, даже если левая дата в шапке не прочиталась", () => {
+    const words: OcrWord[] = [
+      word("Документ", 180, 80),
+      word("Дебет", 420, 80),
+      word("Кредит", 620, 80),
+      word("Дата", 820, 78),
+      word("Документ", 980, 78),
+      word("Дебет", 1240, 78),
+      word("Кредит", 1460, 78),
+      word("12.01.2026", 40, 140),
+      word("Продажа", 170, 140),
+      word("№1", 250, 140),
+      word("471487,25", 430, 140),
+      word("12.01.2026", 820, 140),
+      word("Приход", 980, 140),
+      word("№1", 1120, 140),
+      word("471487,25", 1460, 140),
+    ];
+    const act = parseOcrWords(words, "");
+    assert.equal(act.twoSided, true);
+    const left = act.lines.find((line) => line.side === "ours");
+    const right = act.lines.find((line) => line.side === "theirs");
+    assert.equal(left?.docNumber, "1");
+    assert.equal(left?.date, "2026-01-12");
+    assert.equal(left?.debit, 471487.25);
+    assert.equal(right?.credit, 471487.25);
+    const compared = compareDocuments([act]);
+    assert.equal(compared?.reports[0]?.pairs[0]?.status, "match");
+  });
+
+  it("продолжает колонки на следующей странице без шапки", () => {
+    const header = twoSidedPage("15", "120000,00");
+    const continuation: OcrWord[] = [
+      word("03.02.2026", 40, 80),
+      word("Продажа", 180, 80),
+      word("№16", 280, 80),
+      word("5000,00", 400, 80),
+      word("03.02.2026", 820, 80),
+      word("Приход", 980, 80),
+      word("№16", 1100, 80),
+      word("5000,00", 1440, 80),
+    ];
+    const act = parseOcrPages([header, continuation], "");
+    assert.equal(act.twoSided, true);
+    assert.equal(act.lines.filter((line) => line.docNumber === "16" && line.side === "ours").length, 1);
+    assert.equal(act.lines.filter((line) => line.docNumber === "16" && line.side === "theirs").length, 1);
+  });
+});
+
+describe("несколько актов в одном скане", () => {
+  it("начинает новый акт, когда следующая страница снова открывается заголовком", () => {
+    const first = twoSidedPage("15", "120000,00");
+    const second = twoSidedPage("99", "5000,00");
+    const documents = parseOcrDocuments(
+      [first, second],
+      ["продолжение таблицы без заголовка", "Акт сверки взаимных расчетов между ООО Альфа и ООО Бета"],
+    );
+    assert.equal(documents.length, 2);
+    assert.equal(documents[0]?.lines.some((line) => line.docNumber === "15"), true);
+    assert.equal(documents[0]?.lines.some((line) => line.docNumber === "99"), false);
+    assert.equal(documents[1]?.lines.some((line) => line.docNumber === "99"), true);
+
+    const compared = compareDocuments(documents);
+    assert.equal(compared?.reports.length, 2);
+    assert.match(compared?.reports[0]?.title ?? "", /^Акт 1/);
+    assert.match(compared?.reports[1]?.title ?? "", /^Акт 2/);
+  });
+});
+
+function twoSidedPage(number: string, amount: string): OcrWord[] {
+  return [
+    word("Дата", 40, 80),
+    word("Документ", 180, 80),
+    word("Дебет", 420, 80),
+    word("Кредит", 620, 80),
+    word("Дата", 820, 80),
+    word("Документ", 980, 80),
+    word("Дебет", 1240, 80),
+    word("Кредит", 1460, 80),
+    word("12.01.2026", 40, 140),
+    word("Продажа", 180, 140),
+    word(`№${number}`, 280, 140),
+    word(amount, 400, 140),
+    word("12.01.2026", 820, 140),
+    word("Приход", 980, 140),
+    word(`№${number}`, 1100, 140),
+    word(amount, 1440, 140),
+  ];
+}
 
 function word(text: string, x: number, y: number): OcrWord {
   return { text, confidence: 90, x0: x, y0: y, x1: x + text.length * 12, y1: y + 24 };

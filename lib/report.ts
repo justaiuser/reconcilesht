@@ -1,17 +1,11 @@
 import type { CompareResult, Pair } from "@/lib/types";
 import { formatDateRu, lineLabel } from "@/lib/text";
 
-const STATUS_LABEL = {
-  match: "Совпадает",
-  amount: "Расхождение суммы",
-  "excel-only": "Только в Excel",
-  "scan-only": "Только в скане",
-} as const;
-
 export async function downloadReport(result: CompareResult): Promise<void> {
   const { default: writeExcelFile } = await import("write-excel-file/browser");
+  const labels = result.labels;
   const summary: (string | number | null)[][] = [
-    ["Колонка", "Показатель", "Excel", "Скан", "Статус"],
+    ["Колонка", "Показатель", labels.left, labels.right, "Статус"],
   ];
   const lines: (string | number | null)[][] = [
     [
@@ -19,10 +13,10 @@ export async function downloadReport(result: CompareResult): Promise<void> {
       "Статус",
       "Дата",
       "Документ",
-      "Дебет Excel",
-      "Кредит Excel",
-      "Дебет скан",
-      "Кредит скан",
+      labels.debitLeft,
+      labels.creditLeft,
+      labels.debitRight,
+      labels.creditRight,
       "Комментарий",
     ],
   ];
@@ -38,7 +32,7 @@ export async function downloadReport(result: CompareResult): Promise<void> {
       ]);
     }
     for (const pair of report.pairs) {
-      lines.push(pairRow(report.title, pair));
+      lines.push(pairRow(report.title, pair, result));
     }
   }
 
@@ -54,11 +48,19 @@ export async function downloadReport(result: CompareResult): Promise<void> {
   URL.revokeObjectURL(url);
 }
 
-function pairRow(title: string, pair: Pair): (string | number | null)[] {
+function pairRow(title: string, pair: Pair, result: CompareResult): (string | number | null)[] {
   const line = pair.excel ?? pair.scan;
+  const status =
+    pair.status === "match"
+      ? "Совпадает"
+      : pair.status === "amount"
+        ? "Расхождение суммы"
+        : pair.status === "excel-only"
+          ? result.labels.onlyLeft
+          : result.labels.onlyRight;
   return [
     title,
-    STATUS_LABEL[pair.status],
+    status,
     formatDateRu(line?.date ?? null),
     line ? lineLabel(line.description, line.docNumber) : "—",
     pair.excel?.debit ?? null,

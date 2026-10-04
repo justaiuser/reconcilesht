@@ -3,7 +3,7 @@
 import { useState, type ReactNode } from "react";
 import { Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import type { CompareMode, CompareResult, MirrorMode, Pair, SideReport } from "@/lib/types";
+import type { CompareLabels, CompareMode, CompareResult, MirrorMode, Pair, SideReport } from "@/lib/types";
 import { problemCount } from "@/lib/compare";
 import { downloadReport } from "@/lib/report";
 import { formatDateRu, formatMoney, lineLabel } from "@/lib/text";
@@ -76,17 +76,19 @@ export function ResultView({
         ))}
 
         <div className="mt-4 flex flex-wrap gap-2">
-          <Choice
-            label="Что сверять"
-            value={mode}
-            options={[
-              ["auto", "Авто"],
-              ["both", "Обе колонки"],
-              ["ours", "Наша"],
-              ["theirs", "Контрагент"],
-            ]}
-            onChange={onMode}
-          />
+          {result.columnsOnly ? null : (
+            <Choice
+              label="Что сверять"
+              value={mode}
+              options={[
+                ["auto", "Авто"],
+                ["both", "Обе колонки"],
+                ["ours", "Наша"],
+                ["theirs", "Контрагент"],
+              ]}
+              onChange={onMode}
+            />
+          )}
           <Choice
             label="Суммы"
             value={mirror}
@@ -101,7 +103,11 @@ export function ResultView({
       </div>
 
       {result.reports.map((report) => (
-        <ReportCard key={`${report.side}-${report.mirror}`} report={report} />
+        <ReportCard
+          key={`${report.title}-${report.side}-${report.mirror}`}
+          report={report}
+          labels={result.labels}
+        />
       ))}
 
       {rawText.trim() ? (
@@ -116,7 +122,7 @@ export function ResultView({
   );
 }
 
-function ReportCard({ report }: { report: SideReport }) {
+function ReportCard({ report, labels }: { report: SideReport; labels: CompareLabels }) {
   const [filter, setFilter] = useState<"problems" | "all" | "matches">("problems");
   const problems = report.pairs.filter((pair) => pair.status !== "match");
   const matches = report.pairs.filter((pair) => pair.status === "match");
@@ -127,9 +133,7 @@ function ReportCard({ report }: { report: SideReport }) {
     <article className="min-w-0 rounded-2xl border border-border bg-card p-4 sm:p-5">
       <h3 className="text-base font-semibold">{report.title}</h3>
       {report.mirror ? (
-        <p className="mt-1 text-sm text-muted-foreground">
-          Дебет этой колонки сравнивается с кредитом скана и наоборот.
-        </p>
+        <p className="mt-1 text-sm text-muted-foreground">{labels.mirrorHint}</p>
       ) : null}
 
       {report.summary.length > 0 ? (
@@ -139,8 +143,8 @@ function ReportCard({ report }: { report: SideReport }) {
             <thead className="text-left text-muted-foreground">
               <tr className="border-b border-border">
                 <th className="py-2 pr-3 font-medium">Показатель</th>
-                <th className="py-2 pr-3 text-right font-medium">Excel</th>
-                <th className="py-2 pr-3 text-right font-medium">Скан</th>
+                <th className="py-2 pr-3 text-right font-medium">{labels.left}</th>
+                <th className="py-2 pr-3 text-right font-medium">{labels.right}</th>
                 <th className="py-2 font-medium">Статус</th>
               </tr>
             </thead>
@@ -200,15 +204,15 @@ function ReportCard({ report }: { report: SideReport }) {
                 <th className="py-2 pr-3 font-medium">Статус</th>
                 <th className="py-2 pr-3 font-medium">Дата</th>
                 <th className="py-2 pr-3 font-medium">Документ</th>
-                <th className="py-2 pr-3 text-right font-medium">Дебет Excel</th>
-                <th className="py-2 pr-3 text-right font-medium">Кредит Excel</th>
-                <th className="py-2 pr-3 text-right font-medium">Дебет скан</th>
-                <th className="py-2 text-right font-medium">Кредит скан</th>
+                <th className="py-2 pr-3 text-right font-medium">{labels.debitLeft}</th>
+                <th className="py-2 pr-3 text-right font-medium">{labels.creditLeft}</th>
+                <th className="py-2 pr-3 text-right font-medium">{labels.debitRight}</th>
+                <th className="py-2 text-right font-medium">{labels.creditRight}</th>
               </tr>
             </thead>
             <tbody>
               {visible.map((pair, index) => (
-                <PairRow key={`${pair.status}-${index}`} pair={pair} />
+                <PairRow key={`${pair.status}-${index}`} pair={pair} labels={labels} />
               ))}
             </tbody>
           </table>
@@ -218,7 +222,7 @@ function ReportCard({ report }: { report: SideReport }) {
   );
 }
 
-function PairRow({ pair }: { pair: Pair }) {
+function PairRow({ pair, labels }: { pair: Pair; labels: CompareLabels }) {
   const line = pair.excel ?? pair.scan;
   return (
     <tr className="border-b border-border/70 align-top">
@@ -231,8 +235,8 @@ function PairRow({ pair }: { pair: Pair }) {
               : pair.status === "amount"
                 ? "Сумма"
                 : pair.status === "excel-only"
-                  ? "Только Excel"
-                  : "Только скан"
+                  ? labels.onlyLeft
+                  : labels.onlyRight
           }
         />
         {pair.notes.length > 0 ? (

@@ -91,15 +91,12 @@ function boundsFromHeader(line: OcrWord[]): ColumnBound[] {
 
   const sides: { role: Role; center: number; side: SideName }[] = [];
   let side: SideName = "ours";
-  let seenDate = false;
   let seenAmount = false;
   for (const column of columns) {
-    if (column.role === "date" && seenDate && seenAmount) {
+    if (column.role === "date" && seenAmount) {
       side = "theirs";
-      seenDate = false;
       seenAmount = false;
     }
-    if (column.role === "date") seenDate = true;
     if (column.role === "debit" || column.role === "credit") seenAmount = true;
     sides.push({ ...column, side: side === "theirs" ? "theirs" : "ours" });
   }
@@ -194,8 +191,8 @@ function parseWithColumns(lines: OcrWord[][], bounds: ColumnBound[]): {
       const documentRaw = joinWords(wordsFor(line, bounds, side, "document"), true);
       const debit = parseMoney(joinWords(wordsFor(line, bounds, side, "debit")));
       const credit = parseMoney(joinWords(wordsFor(line, bounds, side, "credit")));
-      const date = parseDate(dateRaw);
-      const docNumber = docFromDocumentCell(documentRaw);
+      const date = parseDate(dateRaw) ?? parseDate(documentRaw);
+      const docNumber = docFromDocumentCell(documentRaw.replace(/\d{1,2}[./-]\d{1,2}[./-]\d{2,4}/g, " "));
       if (debit == null && credit == null) continue;
       if (!date && !docNumber) continue;
       actLines.push({
@@ -360,10 +357,15 @@ function findHeader(lines: OcrWord[][]): OcrWord[] | null {
   return best;
 }
 
-export function parseOcrWords(words: OcrWord[], rawText = ""): ParsedAct {
+export function parseOcrWords(
+  words: OcrWord[],
+  rawText = "",
+  inheritedBounds: ColumnBound[] = [],
+): ParsedAct {
   const lines = groupLines(words);
   const header = findHeader(lines);
-  const bounds = header ? boundsFromHeader(header) : [];
+  const ownBounds = header ? boundsFromHeader(header) : [];
+  const bounds = ownBounds.length > 0 ? ownBounds : inheritedBounds;
   const columnParsed = bounds.length
     ? parseWithColumns(lines, bounds)
     : { actLines: [], summary: emptySummary(), theirsSummary: null };
@@ -399,15 +401,43 @@ export function parseOcrWords(words: OcrWord[], rawText = ""): ParsedAct {
     warnings,
     confidence: meanConfidence(words),
     rawText: fullText,
-    twoSided: actLines.some((line) => line.side === "theirs"),
+    twoSided:
+      !usePlain &&
+      (bounds.some((column) => column.side === "theirs") ||
+        actLines.some((line) => line.side === "theirs")),
   };
+}
+
+export function parseOcrDocuments(pages: OcrWord[][], texts: string[]): ParsedAct[] {
+  if (pages.length === 0) return [parseOcrPages([], texts.join("\n"))];
+  const groups: number[][] = [];
+  pages.forEach((page, index) => {
+    const text = (texts[index] ?? page.map((word) => word.text).join(" ")).slice(0, 500);
+    const startsAct = groups.length > 0 && /акт\s+сверки/i.test(text);
+    if (groups.length === 0 || startsAct) groups.push([index]);
+    else groups[groups.length - 1].push(index);
+  });
+  return groups.map((indexes) =>
+    parseOcrPages(
+      indexes.map((index) => pages[index]),
+      indexes.map((index) => texts[index] ?? "").join("\n"),
+    ),
+  );
 }
 
 export function parseOcrPages(pages: OcrWord[][], rawText: string): ParsedAct {
   if (pages.length === 0) return parseOcrWords([], rawText);
-  const parsed = pages.map((page, index) =>
-    parseOcrWords(page, index === pages.length - 1 ? rawText : ""),
-  );
+  let carriedBounds: ColumnBound[] = [];
+  const parsed = pages.map((page, index) => {
+    const header = findHeader(groupLines(page));
+    const act = parseOcrWords(
+      page,
+      index === pages.length - 1 ? rawText : "",
+      carriedBounds,
+    );
+    if (header) carriedBounds = boundsFromHeader(header);
+    return act;
+  });
   const summary = emptySummary();
   let theirsSummary: ActSummary | null = null;
   const lines: ActLine[] = [];
@@ -453,6 +483,6 @@ export function parseOcrPages(pages: OcrWord[][], rawText: string): ParsedAct {
       : [...warnings],
     confidence: confidenceCount ? Math.round(confidenceSum / confidenceCount) : null,
     rawText,
-    twoSided: lines.some((line) => line.side === "theirs"),
+    twoSided: parsed.some((page) => page.twoSided) || lines.some((line) => line.side === "theirs"),
   };
 }

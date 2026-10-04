@@ -1,6 +1,7 @@
 import type {
   ActLine,
   ActSummary,
+  CompareLabels,
   CompareMode,
   CompareResult,
   MirrorMode,
@@ -12,6 +13,32 @@ import type {
 } from "@/lib/types";
 import { emptySummary } from "@/lib/excel-act";
 import { normalizeDoc, sameMoney } from "@/lib/text";
+
+type NoteVoice = "files" | "columns";
+
+const FILE_LABELS: CompareLabels = {
+  left: "Excel",
+  right: "Скан",
+  onlyLeft: "Только Excel",
+  onlyRight: "Только скан",
+  debitLeft: "Дебет Excel",
+  creditLeft: "Кредит Excel",
+  debitRight: "Дебет скан",
+  creditRight: "Кредит скан",
+  mirrorHint: "Дебет этой колонки сравнивается с кредитом скана и наоборот.",
+};
+
+const COLUMN_LABELS: CompareLabels = {
+  left: "Левая колонка",
+  right: "Правая колонка",
+  onlyLeft: "Только слева",
+  onlyRight: "Только справа",
+  debitLeft: "Дебет слева",
+  creditLeft: "Кредит слева",
+  debitRight: "Дебет справа",
+  creditRight: "Кредит справа",
+  mirrorHint: "Дебет левой колонки сравнивается с кредитом правой и наоборот.",
+};
 
 const SUMMARY_FIELDS: { key: keyof ActSummary; label: string; kind: "debit" | "credit" }[] = [
   { key: "openingDebit", label: "Сальдо начальное, дебет", kind: "debit" },
@@ -71,22 +98,48 @@ function scorePair(excel: ActLine, scan: ActLine, mirror: boolean): number {
   return score;
 }
 
-function pairNotes(excel: ActLine, scan: ActLine, mirror: boolean): string[] {
+function pairNotes(excel: ActLine, scan: ActLine, mirror: boolean, voice: NoteVoice): string[] {
   const excelDebit = amount(excel.debit);
   const excelCredit = amount(excel.credit);
   const scanDebit = amount(mirror ? scan.credit : scan.debit);
   const scanCredit = amount(mirror ? scan.debit : scan.credit);
   const notes: string[] = [];
   if (!sameMoney(excelDebit, scanDebit)) {
-    notes.push(mirror ? "Дебет Excel не равен кредиту скана" : "Дебет не сходится");
+    notes.push(
+      mirror
+        ? voice === "columns"
+          ? "Дебет левой колонки не равен кредиту правой"
+          : "Дебет Excel не равен кредиту скана"
+        : "Дебет не сходится",
+    );
   }
   if (!sameMoney(excelCredit, scanCredit)) {
-    notes.push(mirror ? "Кредит Excel не равен дебету скана" : "Кредит не сходится");
+    notes.push(
+      mirror
+        ? voice === "columns"
+          ? "Кредит левой колонки не равен дебету правой"
+          : "Кредит Excel не равен дебету скана"
+        : "Кредит не сходится",
+    );
   }
   return notes;
 }
 
-export function matchLines(excelLines: ActLine[], scanLines: ActLine[], mirror: boolean): Pair[] {
+function missingNote(missingFrom: "left" | "right", voice: NoteVoice): string {
+  if (voice === "columns") {
+    return missingFrom === "right"
+      ? "Нет такой строки в правой колонке"
+      : "Нет такой строки в левой колонке";
+  }
+  return missingFrom === "right" ? "Нет такой строки в скане" : "Нет такой строки в Excel";
+}
+
+export function matchLines(
+  excelLines: ActLine[],
+  scanLines: ActLine[],
+  mirror: boolean,
+  voice: NoteVoice = "files",
+): Pair[] {
   const candidates: { excelIndex: number; scanIndex: number; score: number }[] = [];
   excelLines.forEach((excelLine, excelIndex) => {
     scanLines.forEach((scanLine, scanIndex) => {
@@ -107,7 +160,7 @@ export function matchLines(excelLines: ActLine[], scanLines: ActLine[], mirror: 
     usedScan.add(candidate.scanIndex);
     const excel = excelLines[candidate.excelIndex];
     const scan = scanLines[candidate.scanIndex];
-    const notes = pairNotes(excel, scan, mirror);
+    const notes = pairNotes(excel, scan, mirror, voice);
     pairs.push({
       status: notes.length === 0 ? "match" : "amount",
       excel,
@@ -118,12 +171,22 @@ export function matchLines(excelLines: ActLine[], scanLines: ActLine[], mirror: 
 
   excelLines.forEach((line, index) => {
     if (!usedExcel.has(index)) {
-      pairs.push({ status: "excel-only", excel: line, scan: null, notes: ["Нет такой строки в скане"] });
+      pairs.push({
+        status: "excel-only",
+        excel: line,
+        scan: null,
+        notes: [missingNote("right", voice)],
+      });
     }
   });
   scanLines.forEach((line, index) => {
     if (!usedScan.has(index)) {
-      pairs.push({ status: "scan-only", excel: null, scan: line, notes: ["Нет такой строки в Excel"] });
+      pairs.push({
+        status: "scan-only",
+        excel: null,
+        scan: line,
+        notes: [missingNote("left", voice)],
+      });
     }
   });
 
@@ -181,12 +244,18 @@ function buildReport(
   scan: ParsedAct,
   side: SideName,
   mirror: boolean,
+  voice: NoteVoice,
 ): SideReport {
   return {
     title: sideTitle(side),
     side,
     mirror,
-    pairs: matchLines(linesFor(excel, side), linesFor(scan, side === "single" ? "single" : side), mirror),
+    pairs: matchLines(
+      linesFor(excel, side),
+      linesFor(scan, side === "single" ? "single" : side),
+      mirror,
+      voice,
+    ),
     summary: compareSummaries(summaryFor(excel, side), summaryFor(scan, side === "single" ? "single" : side), mirror),
   };
 }
@@ -203,6 +272,7 @@ function buildLooseReport(
   scan: ParsedAct,
   side: SideName,
   mirror: boolean,
+  voice: NoteVoice,
 ): SideReport {
   const excelLines = linesFor(excel, side);
   const scanLines = scanLinesForSide(scan, side);
@@ -216,33 +286,45 @@ function buildLooseReport(
     title: sideTitle(side),
     side,
     mirror,
-    pairs: matchLines(excelLines, scanLines, mirror),
+    pairs: matchLines(excelLines, scanLines, mirror, voice),
     summary: compareSummaries(summaryFor(excel, side), scanSummary, mirror),
+  };
+}
+
+function withLabels(result: Omit<CompareResult, "labels" | "columnsOnly">, voice: NoteVoice): CompareResult {
+  return {
+    ...result,
+    labels: voice === "columns" ? COLUMN_LABELS : FILE_LABELS,
+    columnsOnly: voice === "columns",
   };
 }
 
 export function compareActs(
   excel: ParsedAct,
   scan: ParsedAct,
-  options?: { mode?: CompareMode; mirror?: MirrorMode },
+  options?: { mode?: CompareMode; mirror?: MirrorMode; voice?: NoteVoice },
 ): CompareResult {
   const mode = options?.mode ?? "auto";
   const mirrorMode = options?.mirror ?? "auto";
+  const voice = options?.voice ?? "files";
   const sides = excelSides(excel).filter((side) => side !== "single");
   const excelHasBoth = sides.includes("ours") && sides.includes("theirs");
   const scanHasBoth = scan.twoSided;
 
   if ((mode === "both" || (mode === "auto" && excelHasBoth && scanHasBoth)) && excelHasBoth) {
     const mirror = mirrorMode === "on";
-    return {
-      reports: [
-        buildReport(excel, scan, "ours", mirror),
-        buildReport(excel, scan, "theirs", mirror),
-      ],
-      interpretation: mirror
-        ? "Сравниваю обе колонки и переворачиваю суммы: дебет одного файла сверяется с кредитом другого."
-        : "В обоих файлах две колонки. Сверяю нашу колонку с нашей, а колонку контрагента — с колонкой контрагента.",
-    };
+    return withLabels(
+      {
+        reports: [
+          buildReport(excel, scan, "ours", mirror, voice),
+          buildReport(excel, scan, "theirs", mirror, voice),
+        ],
+        interpretation: mirror
+          ? "Сравниваю обе колонки и переворачиваю суммы: дебет одного файла сверяется с кредитом другого."
+          : "В обоих файлах две колонки. Сверяю нашу колонку с нашей, а колонку контрагента — с колонкой контрагента.",
+      },
+      voice,
+    );
   }
 
   const candidateSides: SideName[] = mode === "ours" || mode === "theirs"
@@ -257,8 +339,8 @@ export function compareActs(
   for (const side of candidateSides) {
     for (const mirror of mirrors) {
       const report = side === "single"
-        ? buildLooseReport(excel, scan, "single", mirror)
-        : buildLooseReport(excel, scan, side, mirror);
+        ? buildLooseReport(excel, scan, "single", mirror, voice)
+        : buildLooseReport(excel, scan, side, mirror, voice);
       const score = quality(report.pairs);
       if (!best || better(score, best.score)) best = { side, mirror, report, score };
     }
@@ -267,21 +349,101 @@ export function compareActs(
   const chosen = best ?? {
     side: "single" as const,
     mirror: false,
-    report: buildLooseReport(excel, scan, "single", false),
+    report: buildLooseReport(excel, scan, "single", false, voice),
     score: [0, 0] as [number, number],
   };
+  const mirrorText = chosen.mirror
+    ? voice === "columns"
+      ? " Суммы сопоставлены зеркально: дебет одной колонки с кредитом другой."
+      : " Суммы сопоставлены зеркально: дебет одного файла с кредитом другого."
+    : " Суммы сравниваются напрямую, дебет с дебетом.";
+  if (voice === "columns") {
+    return withLabels(
+      {
+        reports: [chosen.report],
+        interpretation: `Сверяю левую колонку с правой.${mirrorText}`,
+      },
+      voice,
+    );
+  }
   const where =
     chosen.side === "ours"
       ? "с нашей колонкой Excel"
       : chosen.side === "theirs"
         ? "с колонкой контрагента в Excel"
         : "со строками Excel";
-  const mirrorText = chosen.mirror
-    ? " Суммы сопоставлены зеркально: дебет одного файла с кредитом другого."
-    : " Суммы сравниваются напрямую, дебет с дебетом.";
+  return withLabels(
+    {
+      reports: [chosen.report],
+      interpretation: `Сверяю скан ${where}.${mirrorText}`,
+    },
+    voice,
+  );
+}
+
+function columnAct(act: ParsedAct, side: "ours" | "theirs"): ParsedAct {
+  const lines = act.lines
+    .filter((line) => (side === "ours" ? line.side !== "theirs" : line.side === "theirs"))
+    .map((line) => ({ ...line, side: "single" as const }));
   return {
-    reports: [chosen.report],
-    interpretation: `Сверяю скан ${where}.${mirrorText}`,
+    title: act.title,
+    period: act.period,
+    partyA: act.partyA,
+    partyB: act.partyB,
+    lines,
+    summary: side === "theirs" ? (act.theirsSummary ?? emptySummary()) : act.summary,
+    theirsSummary: null,
+    warnings: [],
+    confidence: act.confidence,
+    rawText: act.rawText,
+    twoSided: false,
+  };
+}
+
+function actsWord(count: number): string {
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return "акта";
+  return "актов";
+}
+
+function documentTitle(act: ParsedAct, index: number): string {
+  const who = [act.partyA, act.partyB].filter(Boolean).join(" — ");
+  const period = act.period ? ` (${act.period})` : "";
+  if (who) return `Акт ${index + 1}: ${who}${period}`;
+  return `Акт ${index + 1}`;
+}
+
+export function compareDocuments(
+  acts: ParsedAct[],
+  options?: { mirror?: MirrorMode },
+): CompareResult | null {
+  const sided = acts.filter((act) => act.twoSided);
+  if (sided.length === 0) return null;
+  const pieces = sided.map((act, index) => {
+    const compared = compareActs(columnAct(act, "ours"), columnAct(act, "theirs"), {
+      mode: "auto",
+      mirror: options?.mirror ?? "auto",
+      voice: "columns",
+    });
+    const title = sided.length > 1 ? documentTitle(act, index) : "Левая и правая колонки";
+    return {
+      ...compared,
+      reports: compared.reports.map((report) => ({ ...report, title })),
+    };
+  });
+  const skipped = acts.length - sided.length;
+  const skippedText =
+    skipped > 0 ? " Часть страниц без двух колонок в сверку не вошла." : "";
+  const interpretation =
+    pieces.length === 1
+      ? `${pieces[0].interpretation}${skippedText}`
+      : `В файле ${pieces.length} ${actsWord(pieces.length)}: в каждом левая колонка сверяется с правой.${skippedText}`;
+  return {
+    reports: pieces.flatMap((piece) => piece.reports),
+    interpretation,
+    labels: COLUMN_LABELS,
+    columnsOnly: true,
   };
 }
 

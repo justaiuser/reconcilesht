@@ -1,6 +1,6 @@
 import type { OcrWord, ParsedAct } from "@/lib/types";
 import { stretchContrast } from "@/lib/image";
-import { parseOcrPages } from "@/lib/ocr-table";
+import { parseOcrDocuments, parseOcrPages } from "@/lib/ocr-table";
 
 export type RecognizeProgress = {
   label: string;
@@ -21,11 +21,16 @@ type OcrBlock = {
 
 const MAX_PAGES = 40;
 
+export type Recognition = {
+  act: ParsedAct;
+  documents: ParsedAct[];
+};
+
 export async function recognizePdf(
   file: File,
   onProgress: (progress: RecognizeProgress) => void,
   shouldCancel: () => void,
-): Promise<ParsedAct> {
+): Promise<Recognition> {
   onProgress({ label: "Открываем скан…", percent: 4 });
   const pdfjs = await import("pdfjs-dist");
   pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
@@ -66,7 +71,7 @@ export async function recognizePdf(
       const page = await pdf.getPage(pageNumber);
       const unscaled = page.getViewport({ scale: 1 });
       const longest = Math.max(unscaled.width, unscaled.height);
-      const viewport = page.getViewport({ scale: Math.min(3, 3200 / longest) });
+      const viewport = page.getViewport({ scale: Math.min(3, Math.max(2, 4200 / longest)) });
       const canvas = window.document.createElement("canvas");
       canvas.width = Math.ceil(viewport.width);
       canvas.height = Math.ceil(viewport.height);
@@ -79,7 +84,11 @@ export async function recognizePdf(
     }
 
     onProgress({ label: "Сопоставляем строки…", percent: 96 });
-    return parseOcrPages(pages, texts.join("\n"));
+    const rawText = texts.join("\n");
+    return {
+      act: parseOcrPages(pages, rawText),
+      documents: parseOcrDocuments(pages, texts),
+    };
   } finally {
     await worker.terminate();
   }
