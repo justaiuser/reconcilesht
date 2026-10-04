@@ -2,7 +2,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { parseMoney, parseDate, extractDocNumber, docFromDocumentCell, normalizeDoc } from "./text";
 import { detectColumns, parseExcelMatrix } from "./excel-act";
-import { parseOcrDocuments, parseOcrPages, parseOcrWords } from "./ocr-table";
+import { groupLines, parseOcrDocuments, parseOcrPages, parseOcrWords } from "./ocr-table";
+import { pageStrips } from "./page-strips";
 import { compareActs, compareDocuments } from "./compare";
 import { buildExcelMatrix, buildSampleScanAct } from "./sample-data";
 import type { OcrWord } from "./types";
@@ -239,6 +240,36 @@ describe("сравнение", () => {
   });
 });
 
+describe("полосы плотной страницы", () => {
+  it("режет частые строки и оставляет редкую страницу целиком", () => {
+    const dense = paintRows(48, 220, 20, 3);
+    const strips = pageStrips(dense, 48, 220, 1);
+    assert.ok(strips.length >= 3);
+    for (let index = 1; index < strips.length; index += 1) {
+      assert.ok(strips[index].top >= strips[index - 1].bottom);
+    }
+    assert.equal(strips[0].top >= 0, true);
+    assert.equal(strips[strips.length - 1].bottom <= 220, true);
+
+    const sparse = paintRows(48, 220, 4, 28);
+    assert.equal(pageStrips(sparse, 48, 220, 1).length, 1);
+  });
+
+  it("не склеивает строки, которые распознаватель уже разделил", () => {
+    const lines = groupLines([
+      word("12.01.2026", 40, 100, 1),
+      word("471487,25", 400, 108, 1),
+      word("471487,25", 1400, 110, 1),
+      word("13.01.2026", 40, 112, 2),
+      word("1000,00", 400, 116, 2),
+      word("900,00", 1400, 118, 2),
+    ]);
+    assert.equal(lines.length, 2);
+    assert.equal(lines[0].some((item) => item.text.startsWith("471487")), true);
+    assert.equal(lines[1].some((item) => item.text.startsWith("1000")), true);
+  });
+});
+
 describe("две колонки в одном скане", () => {
   it("делит стороны, даже если левая дата в шапке не прочиталась", () => {
     const words: OcrWord[] = [
@@ -330,6 +361,18 @@ function twoSidedPage(number: string, amount: string): OcrWord[] {
   ];
 }
 
-function word(text: string, x: number, y: number): OcrWord {
-  return { text, confidence: 90, x0: x, y0: y, x1: x + text.length * 12, y1: y + 24 };
+function word(text: string, x: number, y: number, line?: number): OcrWord {
+  return { text, confidence: 90, x0: x, y0: y, x1: x + text.length * 12, y1: y + 24, line };
+}
+
+function paintRows(width: number, height: number, count: number, gap: number): Uint8Array {
+  const pixels = new Uint8Array(width * height).fill(255);
+  const rowHeight = 4;
+  for (let index = 0; index < count; index += 1) {
+    const top = 8 + index * (rowHeight + gap);
+    for (let y = top; y < top + rowHeight && y < height; y += 1) {
+      for (let x = 2; x < width - 2; x += 1) pixels[y * width + x] = 0;
+    }
+  }
+  return pixels;
 }

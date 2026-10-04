@@ -22,6 +22,26 @@ type ColumnBound = {
 
 export function groupLines(words: OcrWord[]): OcrWord[][] {
   const items = words.filter((word) => word.text.trim());
+  const marked = items.filter((word) => word.line != null);
+  const loose = items.filter((word) => word.line == null);
+  const grouped = [...groupMarked(marked), ...groupLoose(loose)];
+  return grouped.sort((a, b) => lineCenter(a) - lineCenter(b) || a[0].x0 - b[0].x0);
+}
+
+function groupMarked(words: OcrWord[]): OcrWord[][] {
+  const buckets = new Map<number, OcrWord[]>();
+  for (const word of words) {
+    const key = word.line ?? 0;
+    const bucket = buckets.get(key);
+    if (bucket) bucket.push(word);
+    else buckets.set(key, [word]);
+  }
+  return [...buckets.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, line]) => line.sort((a, b) => a.x0 - b.x0));
+}
+
+function groupLoose(items: OcrWord[]): OcrWord[][] {
   items.sort((a, b) => a.y0 - b.y0 || a.x0 - b.x0);
   const lines: { y: number; height: number; words: OcrWord[] }[] = [];
 

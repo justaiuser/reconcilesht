@@ -104,4 +104,5 @@ export type OcrWord = {
   y0: number;
   x1: number;
   y1: number;
+  line?: number;
 };
