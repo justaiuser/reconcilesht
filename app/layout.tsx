@@ -16,10 +16,14 @@ export const metadata: Metadata = {
 
 const themeScript = `(function(){try{var t=localStorage.getItem("sverka.theme");var d=t==="dark"||(t!=="light"&&matchMedia("(prefers-color-scheme: dark)").matches);document.documentElement.classList.toggle("dark",d);}catch(e){}})();`;
 
+// pdf.js 6 expects Map/WeakMap.getOrInsertComputed (Chrome 135+); polyfill for older office PCs.
+const mapPolyfill = `(function(){function p(o){if(typeof o.getOrInsertComputed==="function")return;Object.defineProperty(o,"getOrInsertComputed",{configurable:true,writable:true,value:function(k,f){if(this.has(k))return this.get(k);var v=f(k);this.set(k,v);return v;}});}try{p(Map.prototype);p(WeakMap.prototype);}catch(e){}})();`;
+
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="ru" className={`${sans.variable} h-full antialiased`} suppressHydrationWarning>
       <head>
+        <script dangerouslySetInnerHTML={{ __html: mapPolyfill }} />
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
       <body className="min-h-full font-sans">{children}</body>

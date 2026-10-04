@@ -1,5 +1,6 @@
 import { emptySummary } from "@/lib/excel-act";
 import { stretchContrast } from "@/lib/image";
+import { loadPdfJs } from "@/lib/pdfjs";
 import { columnSplit, pageStrips } from "@/lib/page-strips";
 import { asRightTable, joinTables, qwenPagesToRecognition, type QwenPage } from "@/lib/qwen-act";
 import type { ParsedAct } from "@/lib/types";
@@ -18,8 +19,7 @@ export async function recognizeWithQwen(
   options: { columns?: boolean } = {},
 ): Promise<{ act: ParsedAct; documents: ParsedAct[] }> {
   onProgress({ label: "Открываем скан для Qwen…", percent: 4 });
-  const pdfjs = await import("pdfjs-dist");
-  pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
+  const pdfjs = await loadPdfJs();
   const data = new Uint8Array(await file.arrayBuffer());
   const loadingTask = pdfjs.getDocument({ data });
   try {

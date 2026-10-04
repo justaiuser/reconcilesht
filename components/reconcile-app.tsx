@@ -479,5 +479,6 @@ function pdfMessage(error: unknown): string {
   if (/password/i.test(message)) return "PDF закрыт паролем. Сохраните копию без пароля.";
   if (/cancelled/i.test(message)) return "Чтение остановлено.";
   if (/[а-яё]/i.test(message)) return message;
+  if (typeof console !== "undefined") console.error("Ошибка чтения PDF:", message);
   return "Не удалось прочитать скан. Проверьте, что это обычный PDF, и попробуйте ещё раз.";
 }

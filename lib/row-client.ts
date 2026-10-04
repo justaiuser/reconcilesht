@@ -1,4 +1,5 @@
 import { pageTextLines, textLayerLooksUseful } from "@/lib/pdf-text";
+import { loadPdfJs } from "@/lib/pdfjs";
 import { printedPagesToRecognition, readPrintedPage, type PrintedPage } from "@/lib/printed-row";
 import type { ParsedAct } from "@/lib/types";
 import type { RecognizeProgress } from "@/lib/recognize";
@@ -11,8 +12,7 @@ export async function recognizeRows(
   shouldCancel: () => void,
 ): Promise<{ act: ParsedAct; documents: ParsedAct[] }> {
   onProgress({ label: "Открываем скан…", percent: 4 });
-  const pdfjs = await import("pdfjs-dist");
-  pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
+  const pdfjs = await loadPdfJs();
   const data = new Uint8Array(await file.arrayBuffer());
   const loadingTask = pdfjs.getDocument({ data });
   try {

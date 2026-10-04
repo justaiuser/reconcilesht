@@ -1,6 +1,7 @@
 import type { OcrWord, ParsedAct } from "@/lib/types";
 import { stretchContrast } from "@/lib/image";
 import { parseOcrDocuments, parseOcrPages } from "@/lib/ocr-table";
+import { loadPdfJs } from "@/lib/pdfjs";
 import { pageStrips } from "@/lib/page-strips";
 
 export type RecognizeProgress = {
@@ -33,8 +34,7 @@ export async function recognizePdf(
   shouldCancel: () => void,
 ): Promise<Recognition> {
   onProgress({ label: "Открываем скан…", percent: 4 });
-  const pdfjs = await import("pdfjs-dist");
-  pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
+  const pdfjs = await loadPdfJs();
   const data = new Uint8Array(await file.arrayBuffer());
   const loadingTask = pdfjs.getDocument({ data });
   try {
@@ -203,8 +203,7 @@ function wordsFromPlainText(text: string, yOffset: number, lineIds: { next: numb
 }
 
 export async function countPdfPages(file: File): Promise<number> {
-  const pdfjs = await import("pdfjs-dist");
-  pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
+  const pdfjs = await loadPdfJs();
   const data = new Uint8Array(await file.arrayBuffer());
   const loadingTask = pdfjs.getDocument({ data });
   try {
