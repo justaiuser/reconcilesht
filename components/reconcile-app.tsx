@@ -9,8 +9,9 @@ import { ResultView } from "@/components/result-view";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { compareActs, compareDocuments } from "@/lib/compare";
 import { blankMap, detectColumns, parseExcelMatrix } from "@/lib/excel-act";
+import { recognizeRows } from "@/lib/row-client";
 import { recognizeWithQwen } from "@/lib/qwen-client";
-import { countPdfPages, recognizePdf } from "@/lib/recognize";
+import { countPdfPages } from "@/lib/recognize";
 import { buildSampleFiles } from "@/lib/sample-files";
 import type { Cell, ColumnMap, CompareMode, MirrorMode, ParsedAct } from "@/lib/types";
 
@@ -56,8 +57,6 @@ export function ReconcileApp() {
         if (cancelled || body.ok !== true) return;
         setQwenReady(true);
         setQwenHint(typeof body.message === "string" ? body.message : "");
-        useQwenRef.current = true;
-        setUseQwen(true);
       })
       .catch(() => {
         if (!cancelled) setQwenReady(false);
@@ -176,7 +175,7 @@ export function ReconcileApp() {
       };
       const recognized = useQwenRef.current
         ? await recognizeWithQwen(pdfFile, onProgress, shouldCancel, { columns: singleFileRef.current })
-        : await recognizePdf(pdfFile, onProgress, shouldCancel);
+        : await recognizeRows(pdfFile, onProgress, shouldCancel);
       if (cancelRef.current) return;
       setScanAct(recognized.act);
       setDocuments(recognized.documents);
@@ -243,8 +242,8 @@ export function ReconcileApp() {
               Скан акта сверки и файл из учётной программы. Если в скане уже две
               колонки, Excel не нужен.{" "}
               {useQwen
-                ? "Скан уходит на компьютер, где запущена программа, и его читает Qwen. В интернет файлы не отправляются."
-                : "Документы читаются в этом браузере и никуда не отправляются."}
+                ? "Скан читает модель Qwen. Она может перепутать цифру или строку, поэтому для точной сверки галочку лучше снять."
+                : "Каждая строка скана читается отдельно на компьютере, где запущена программа, и цифра не может переехать в соседнюю строку. В интернет файл не отправляется."}
             </p>
           </div>
           <ThemeToggle />
@@ -285,9 +284,8 @@ export function ReconcileApp() {
               <span className="font-medium">Читать через Qwen</span>
               <span className="mt-0.5 block text-muted-foreground">
                 {qwenHint ? `${qwenHint}. ` : ""}
-                Страница скана передаётся на компьютер, где запущена программа, и там её
-                читает модель. В интернет файл не уходит. Если снять галочку, скан
-                читается прямо в браузере.
+                Модель переписывает таблицу своими словами и путает похожие суммы. Без
+                галочки программа читает каждую строку отдельно и берёт цифры из неё.
               </span>
             </span>
           </label>
@@ -325,7 +323,7 @@ export function ReconcileApp() {
           <p className="text-sm leading-6 text-muted-foreground">
             {useQwen
               ? `В скане ${pagesLabel(pdfPages)}. Qwen читает страницы по одной, это займёт несколько минут.`
-              : `В скане ${pagesLabel(pdfPages)}. Чтение займёт несколько минут, и компьютер может притормаживать — так и должно быть.`}
+              : `В скане ${pagesLabel(pdfPages)}. Строки читаются по одной на компьютере, где запущена программа.`}
           </p>
         ) : null}
 

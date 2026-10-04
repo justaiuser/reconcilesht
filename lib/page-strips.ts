@@ -11,7 +11,7 @@ export function pageStrips(
   rowsPerStrip = ROWS_PER_STRIP,
 ): PageStrip[] {
   if (width < 2 || height < 2) return [{ top: 0, bottom: height }];
-  const bands = textBands(pixels, width, height, channels);
+  const bands = textRows(pixels, width, height, channels);
   if (bands.length === 0) return [{ top: 0, bottom: Math.max(1, height) }];
 
   const heights = bands.map((band) => band.bottom - band.top).sort((a, b) => a - b);
@@ -98,7 +98,7 @@ function splitTallBands(bands: PageStrip[], median: number): PageStrip[] {
   return rows;
 }
 
-function textBands(
+export function textRows(
   pixels: Uint8Array | Uint8ClampedArray,
   width: number,
   height: number,

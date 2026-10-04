@@ -6,6 +6,7 @@ import { groupLines, parseOcrDocuments, parseOcrPages, parseOcrWords } from "./o
 import { pageStrips } from "./page-strips";
 import { compareActs, compareDocuments } from "./compare";
 import { QWEN_PROMPT, looksLooping, parseQwenResponse, qwenPagesToRecognition, type QwenPage } from "./qwen-act";
+import { readPrintedPage } from "./printed-row";
 import { chooseQwenModel, readStream } from "./qwen-ollama";
 import { buildExcelMatrix, buildSampleScanAct } from "./sample-data";
 import type { ActLine, ParsedAct, OcrWord } from "./types";
@@ -464,6 +465,53 @@ describe("ошибки маленькой модели", () => {
     assert.equal(act.summary.closingDebit, 26306875.68);
     assert.equal(act.theirsSummary, null);
     assert.equal(act.twoSided, false);
+  });
+});
+
+describe("строка печатного акта", () => {
+  it("берёт номер с дефисом и сумму из своей строки, не путая даты с деньгами", () => {
+    const page = readPrintedPage([
+      "Входящее сальдо: по дебету по кредиту",
+      "0,00 0,00 руб",
+      "1800065755 — 1800065755-254 24.09.2025 24.09.2025 1 330 442,88 руб",
+      "1800066630 — 1800066630-254 26.09.2025 26.09.2025 3 617 522,50 руб",
+      "1800066631 1800066631-254 26.09.2025 26.09.2025 3 616 777,92 руб",
+      "какая-то рукописная помета 24.09.2025",
+    ]);
+    assert.equal(page.summary.openingDebit, 0);
+    assert.equal(page.summary.openingCredit, 0);
+    assert.deepEqual(
+      page.lines.map((line) => [line.number, line.date, line.debit]),
+      [
+        ["1800065755-254", "2025-09-24", 1330442.88],
+        ["1800066630-254", "2025-09-26", 3617522.5],
+        ["1800066631-254", "2025-09-26", 3616777.92],
+      ],
+    );
+  });
+
+  it("относит итог к оборотам, а следующий такой же итог к исходящему сальдо", () => {
+    const page = readPrintedPage([
+      "Обороты по дебету: Обороты по кредиту:",
+      "26 306 875,68 0.00 руб",
+      "Исходящее сальдо: по дебету по кредиту",
+      "26 306 875,68 0,00 руб",
+    ]);
+    assert.equal(page.summary.turnoverDebit, 26306875.68);
+    assert.equal(page.summary.turnoverCredit, 0);
+    assert.equal(page.summary.closingDebit, 26306875.68);
+    assert.equal(page.summary.closingCredit, 0);
+    assert.equal(page.lines.length, 0);
+  });
+
+  it("не записывает продажу с датой во входящее сальдо, даже если номер не прочитался", () => {
+    const page = readPrintedPage([
+      "Сальдо начальное",
+      "12.01.2026 Продажа (1 от 14.01.2026) 471 487,25",
+    ]);
+    assert.equal(page.summary.openingDebit, null);
+    assert.equal(page.lines[0]?.number, "1");
+    assert.equal(page.lines[0]?.debit, 471487.25);
   });
 });
 
