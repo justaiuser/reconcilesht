@@ -55,37 +55,83 @@ export async function qwenStatus(fetchImpl: FetchLike = fetch): Promise<{
   }
 }
 
+const IDLE_MS = 90_000;
+const LIMIT_MS = 600_000;
+
 export async function readActPage(imageBase64: string, fetchImpl: FetchLike = fetch): Promise<QwenPage> {
   const image = imageBase64.replace(/^data:image\/[a-z0-9.+-]+;base64,/i, "").trim();
   if (!image) throw new Error("Пустая страница скана.");
   if (image.length > 12_000_000) throw new Error("Страница скана слишком большая для модели.");
   const status = await qwenStatus(fetchImpl);
   if (!status.ok || !status.model) throw new Error(status.message);
-  const response = await fetchImpl(`${ollamaHost()}/api/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    signal: AbortSignal.timeout(600_000),
-    body: JSON.stringify({
-      model: status.model,
-      stream: true,
-      format: QWEN_SCHEMA,
-      think: false,
-      messages: [{ role: "user", content: QWEN_PROMPT, images: [image] }],
-      options: { temperature: 0, num_predict: 6144, num_ctx: 16384 },
-    }),
-  });
-  if (!response.ok || !response.body) {
-    const body = (await response.json().catch(() => null)) as { error?: string } | null;
-    throw new Error(body?.error || "Модель Qwen не смогла прочитать страницу.");
+  return askModel(image, status.model, fetchImpl);
+}
+
+async function askModel(image: string, model: string, fetchImpl: FetchLike): Promise<QwenPage> {
+  const controller = new AbortController();
+  let stop: "idle" | "limit" | null = null;
+  const limit = setTimeout(() => {
+    stop = "limit";
+    controller.abort();
+  }, LIMIT_MS);
+  let idle = setTimeout(() => {
+    stop = "idle";
+    controller.abort();
+  }, 180_000);
+  const bump = () => {
+    clearTimeout(idle);
+    idle = setTimeout(() => {
+      stop = "idle";
+      controller.abort();
+    }, IDLE_MS);
+  };
+  try {
+    const response = await fetchImpl(`${ollamaHost()}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model,
+        stream: true,
+        format: QWEN_SCHEMA,
+        think: false,
+        messages: [{ role: "user", content: QWEN_PROMPT, images: [image] }],
+        options: { temperature: 0, num_predict: 6144, num_ctx: 16384 },
+      }),
+    });
+    bump();
+    if (!response.ok || !response.body) {
+      const body = (await response.json().catch(() => null)) as { error?: string } | null;
+      throw new Error(body?.error || "Модель Qwen не смогла прочитать страницу.");
+    }
+    const content = await readStream(response.body, bump);
+    if (!content.trim()) throw new Error(stoppedMessage(stop));
+    const page = parseQwenResponse(content);
+    if (stop) {
+      page.note = page.note
+        ? `${page.note} ${stoppedMessage(stop)}`
+        : stoppedMessage(stop);
+    }
+    return page;
+  } catch (error) {
+    if (stop) throw new Error(stoppedMessage(stop));
+    throw error;
+  } finally {
+    clearTimeout(limit);
+    clearTimeout(idle);
   }
-  const content = await readStream(response.body);
-  if (!content.trim()) throw new Error("Модель Qwen вернула пустой ответ.");
-  return parseQwenResponse(content);
+}
+
+function stoppedMessage(stop: "idle" | "limit" | null): string {
+  if (stop === "idle") {
+    return "Модель замолчала на этой части страницы. Выполните ollama ps: в колонке PROCESSOR должно быть 100% GPU. Если там есть CPU, поставьте модель меньше, ollama pull qwen3-vl:4b-instruct.";
+  }
+  return "Модель не дописала эту часть страницы. Показаны только строки, которые она успела прочитать.";
 }
 
 // Ollama sends the answer as NDJSON chunks; streaming keeps headers flowing so
 // Node's fetch does not hit its 300 s header timeout on slow CPUs.
-export async function readStream(body: ReadableStream<Uint8Array>): Promise<string> {
+export async function readStream(body: ReadableStream<Uint8Array>, bump?: () => void): Promise<string> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -101,17 +147,23 @@ export async function readStream(body: ReadableStream<Uint8Array>): Promise<stri
     if (chunk.error) throw new Error(chunk.error);
     content += chunk.message?.content ?? "";
   };
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
-    lines.forEach(take);
-    if (looksLooping(content)) {
-      await reader.cancel();
-      return content;
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      bump?.();
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      lines.forEach(take);
+      if (looksLooping(content)) {
+        await reader.cancel();
+        return content;
+      }
     }
+  } catch (error) {
+    if (content.trim()) return content;
+    throw error;
   }
   take(buffer + decoder.decode());
   return content;

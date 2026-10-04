@@ -6,7 +6,7 @@ import { groupLines, parseOcrDocuments, parseOcrPages, parseOcrWords } from "./o
 import { pageStrips } from "./page-strips";
 import { compareActs, compareDocuments } from "./compare";
 import { QWEN_PROMPT, looksLooping, parseQwenResponse, qwenPagesToRecognition, type QwenPage } from "./qwen-act";
-import { chooseQwenModel } from "./qwen-ollama";
+import { chooseQwenModel, readStream } from "./qwen-ollama";
 import { buildExcelMatrix, buildSampleScanAct } from "./sample-data";
 import type { ActLine, ParsedAct, OcrWord } from "./types";
 
@@ -483,6 +483,22 @@ describe("выбор модели Qwen", () => {
       chooseQwenModel(["qwen3-vl:2b-instruct", "qwen3-vl:8b", "qwen3-vl:8b-instruct", "qwen3-vl:4b-instruct"], undefined),
       "qwen3-vl:8b-instruct",
     );
+  });
+
+  it("оставляет уже полученный текст, если модель оборвалась", async () => {
+    const encoder = new TextEncoder();
+    let sent = false;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent) {
+          controller.error(new Error("abort"));
+          return;
+        }
+        sent = true;
+        controller.enqueue(encoder.encode(`${JSON.stringify({ message: { content: "{\"rows\":[" } })}\n`));
+      },
+    });
+    assert.match(await readStream(stream), /\{"rows":\[/);
   });
 
   it("не даёт модели готовых номеров и сумм, которые можно переписать", () => {

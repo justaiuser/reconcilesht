@@ -22,6 +22,7 @@ export async function POST(request: Request) {
     return Response.json({ page });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Модель Qwen не смогла прочитать страницу.";
+    console.error(message);
     const status = /не запущен|не скачана|не ответил/i.test(message) ? 503 : 502;
     return Response.json({ message }, { status });
   }
