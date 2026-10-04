@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { LoaderCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ColumnMapper } from "@/components/column-mapper";
@@ -9,6 +9,7 @@ import { ResultView } from "@/components/result-view";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { compareActs, compareDocuments } from "@/lib/compare";
 import { blankMap, detectColumns, parseExcelMatrix } from "@/lib/excel-act";
+import { recognizeWithQwen } from "@/lib/qwen-client";
 import { countPdfPages, recognizePdf } from "@/lib/recognize";
 import { buildSampleFiles } from "@/lib/sample-files";
 import type { Cell, ColumnMap, CompareMode, MirrorMode, ParsedAct } from "@/lib/types";
@@ -36,16 +37,44 @@ export function ReconcileApp() {
   const [scanAct, setScanAct] = useState<ParsedAct | null>(null);
   const [documents, setDocuments] = useState<ParsedAct[] | null>(null);
   const [singleFile, setSingleFile] = useState(false);
+  const [qwenReady, setQwenReady] = useState(false);
+  const [qwenHint, setQwenHint] = useState("");
+  const [useQwen, setUseQwen] = useState(false);
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const [mode, setMode] = useState<CompareMode>("auto");
   const [mirror, setMirror] = useState<MirrorMode>("auto");
   const [sampleBusy, setSampleBusy] = useState(false);
   const cancelRef = useRef(false);
   const singleFileRef = useRef(false);
+  const useQwenRef = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/qwen")
+      .then((response) => response.json())
+      .then((body: { ok?: boolean; message?: string }) => {
+        if (cancelled || body.ok !== true) return;
+        setQwenReady(true);
+        setQwenHint(typeof body.message === "string" ? body.message : "");
+        useQwenRef.current = true;
+        setUseQwen(true);
+      })
+      .catch(() => {
+        if (!cancelled) setQwenReady(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   function setSingle(value: boolean) {
     singleFileRef.current = value;
     setSingleFile(value);
+  }
+
+  function setQwen(value: boolean) {
+    useQwenRef.current = value;
+    setUseQwen(value);
   }
 
   const sheet = sheets.find((item) => item.name === sheetName) ?? null;
@@ -139,7 +168,8 @@ export function ReconcileApp() {
     setDocuments(null);
     setPhase({ kind: "working", label: "Готовим чтение скана…", percent: 2 });
     try {
-      const recognized = await recognizePdf(
+      const read = useQwenRef.current ? recognizeWithQwen : recognizePdf;
+      const recognized = await read(
         pdfFile,
         (progress) => {
           if (!cancelRef.current) setPhase({ kind: "working", ...progress });
@@ -212,8 +242,10 @@ export function ReconcileApp() {
             <h1 className="text-xl font-semibold tracking-tight">Сверка актов</h1>
             <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
               Скан акта сверки и файл из учётной программы. Если в скане уже две
-              колонки, Excel не нужен. Документы читаются в этом браузере и никуда не
-              отправляются.
+              колонки, Excel не нужен.{" "}
+              {useQwen
+                ? "Скан уходит на компьютер, где запущена программа, и его читает Qwen. В интернет файлы не отправляются."
+                : "Документы читаются в этом браузере и никуда не отправляются."}
             </p>
           </div>
           <ThemeToggle />
@@ -240,6 +272,27 @@ export function ReconcileApp() {
             </span>
           </span>
         </label>
+
+        {qwenReady ? (
+          <label className="flex max-w-3xl items-start gap-3 text-sm leading-6">
+            <input
+              type="checkbox"
+              className="mt-1 size-4 accent-primary"
+              checked={useQwen}
+              disabled={working || sampleBusy}
+              onChange={(event) => setQwen(event.target.checked)}
+            />
+            <span>
+              <span className="font-medium">Читать через Qwen</span>
+              <span className="mt-0.5 block text-muted-foreground">
+                {qwenHint ? `${qwenHint}. ` : ""}
+                Страница скана передаётся на компьютер, где запущена программа, и там её
+                читает модель. В интернет файл не уходит. Если снять галочку, скан
+                читается прямо в браузере.
+              </span>
+            </span>
+          </label>
+        ) : null}
 
         <div className={singleFile ? "grid gap-4" : "grid gap-4 lg:grid-cols-2"}>
           <FileDrop
@@ -271,8 +324,9 @@ export function ReconcileApp() {
         {!singleFile && excelError ? <p className="text-sm text-destructive">{excelError}</p> : null}
         {pdfPages != null && pdfPages > 8 ? (
           <p className="text-sm leading-6 text-muted-foreground">
-            В скане {pagesLabel(pdfPages)}. Чтение займёт несколько минут, и компьютер
-            может притормаживать — так и должно быть.
+            {useQwen
+              ? `В скане ${pagesLabel(pdfPages)}. Qwen читает страницы по одной, это займёт несколько минут.`
+              : `В скане ${pagesLabel(pdfPages)}. Чтение займёт несколько минут, и компьютер может притормаживать — так и должно быть.`}
           </p>
         ) : null}
 
@@ -385,6 +439,6 @@ function pdfMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : "";
   if (/password/i.test(message)) return "PDF закрыт паролем. Сохраните копию без пароля.";
   if (/cancelled/i.test(message)) return "Чтение остановлено.";
-  if (/страниц/i.test(message)) return message;
+  if (/[а-яё]/i.test(message)) return message;
   return "Не удалось прочитать скан. Проверьте, что это обычный PDF, и попробуйте ещё раз.";
 }

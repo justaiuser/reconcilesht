@@ -5,6 +5,8 @@ import { detectColumns, parseExcelMatrix } from "./excel-act";
 import { groupLines, parseOcrDocuments, parseOcrPages, parseOcrWords } from "./ocr-table";
 import { pageStrips } from "./page-strips";
 import { compareActs, compareDocuments } from "./compare";
+import { parseQwenResponse, qwenPagesToRecognition, type QwenPage } from "./qwen-act";
+import { chooseQwenModel } from "./qwen-ollama";
 import { buildExcelMatrix, buildSampleScanAct } from "./sample-data";
 import type { OcrWord } from "./types";
 
@@ -339,6 +341,105 @@ describe("несколько актов в одном скане", () => {
     assert.match(compared?.reports[1]?.title ?? "", /^Акт 2/);
   });
 });
+
+describe("ответ Qwen", () => {
+  it("собирает двусторонний акт из JSON, даже если вокруг него есть текст", () => {
+    const page = parseQwenResponse(
+      "Таблица готова:\n```json\n" + JSON.stringify(qwenPayload("1", 471487.25)) + "\n```",
+    );
+    assert.equal(page.newAct, true);
+    assert.equal(page.rows[0]?.leftDebit, 471487.25);
+    assert.equal(page.rows[0]?.rightCredit, 471487.25);
+    assert.equal(page.left.openingDebit, 6817644.88);
+
+    const recognized = qwenPagesToRecognition([page]);
+    assert.equal(recognized.documents.length, 1);
+    assert.equal(recognized.act.twoSided, true);
+    assert.equal(recognized.act.partyA, "ООО ТИМПРО");
+    assert.equal(recognized.act.lines.find((line) => line.side === "ours")?.debit, 471487.25);
+    const compared = compareDocuments(recognized.documents);
+    assert.equal(compared?.reports[0]?.pairs[0]?.status, "match");
+  });
+
+  it("дописывает продолжение таблицы и отделяет новый акт", () => {
+    const first = parseQwenResponse(JSON.stringify(qwenPayload("1", 1000)));
+    const continuation = parseQwenResponse(JSON.stringify({ ...qwenPayload("2", 2500), newAct: false }));
+    const joined = qwenPagesToRecognition([first, continuation]);
+    assert.equal(joined.documents.length, 1);
+    assert.equal(joined.act.lines.filter((line) => line.side === "ours").length, 2);
+
+    const another = parseQwenResponse(JSON.stringify({ ...qwenPayload("9", 3000), newAct: true, partyLeft: "ООО Велес" }));
+    const split = qwenPagesToRecognition([first, another]);
+    assert.equal(split.documents.length, 2);
+    assert.equal(split.documents[1]?.partyA, "ООО Велес");
+    assert.equal(split.documents[0]?.lines.some((line) => line.docNumber === "9"), false);
+  });
+
+  it("принимает сумму строкой и имя lines", () => {
+    const page = parseQwenResponse(
+      JSON.stringify({
+        newAct: true,
+        lines: [{ date: "12.01.2026", document: "Продажа (7 от 12.01.2026)", leftDebit: "471 487,25", rightCredit: "471487.25" }],
+      }),
+    );
+    assert.equal(page.rows[0]?.leftDebit, 471487.25);
+    assert.equal(page.rows[0]?.rightCredit, 471487.25);
+    const recognized = qwenPagesToRecognition([page]);
+    assert.equal(recognized.act.lines.find((line) => line.side === "ours")?.docNumber, "7");
+  });
+});
+
+describe("выбор модели Qwen", () => {
+  it("предпочитает instruct и иначе берёт любую qwen3-vl", () => {
+    assert.equal(
+      chooseQwenModel(["qwen3-vl:2b", "qwen3-vl:2b-instruct"], "qwen3-vl:2b-instruct"),
+      "qwen3-vl:2b-instruct",
+    );
+    assert.equal(
+      chooseQwenModel(["qwen3-vl:2b-instruct:latest"], "qwen3-vl:2b-instruct"),
+      "qwen3-vl:2b-instruct:latest",
+    );
+    assert.equal(chooseQwenModel(["llama3", "qwen3-vl:2b"], "qwen3-vl:2b-instruct"), "qwen3-vl:2b");
+    assert.equal(chooseQwenModel(["llama3"], "qwen3-vl:2b-instruct"), null);
+  });
+});
+
+function qwenPayload(number: string, amount: number): QwenPage {
+  return {
+    newAct: true,
+    partyLeft: "ООО ТИМПРО",
+    partyRight: "АО ТЭМПО",
+    period: "1 квартал 2026",
+    rows: [
+      {
+        date: "12.01.2026",
+        document: `Продажа (${number} от 12.01.2026)`,
+        number,
+        leftDebit: amount,
+        leftCredit: null,
+        rightDebit: null,
+        rightCredit: amount,
+      },
+    ],
+    left: {
+      openingDebit: 6817644.88,
+      openingCredit: null,
+      turnoverDebit: amount,
+      turnoverCredit: null,
+      closingDebit: null,
+      closingCredit: null,
+    },
+    right: {
+      openingDebit: null,
+      openingCredit: 6817644.88,
+      turnoverDebit: null,
+      turnoverCredit: amount,
+      closingDebit: null,
+      closingCredit: null,
+    },
+    note: null,
+  };
+}
 
 function twoSidedPage(number: string, amount: string): OcrWord[] {
   return [
