@@ -172,7 +172,13 @@ export function extractPeriod(text: string): string | null {
 }
 
 export function lineLabel(description: string, docNumber: string | null): string {
-  if (description.trim()) return description.trim();
-  if (docNumber) return `№ ${docNumber}`;
-  return "Без названия";
+  const text = description.trim();
+  if (!docNumber) return text || "Без названия";
+  if (!text) return `№ ${docNumber}`;
+  const normalized = normalizeDoc(docNumber);
+  const alreadyShown = normalized
+    ? (text.match(/\d[\d/-]*/g) ?? []).some((token) => normalizeDoc(token) === normalized)
+    : text.includes(docNumber);
+  if (alreadyShown) return text;
+  return `${text} № ${docNumber}`;
 }

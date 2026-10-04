@@ -260,11 +260,21 @@ function buildReport(
   };
 }
 
+function scanCandidates(scan: ParsedAct, side: SideName): SideName[] {
+  const present = new Set(scan.lines.map((line) => line.side));
+  const split = present.has("ours") || present.has("theirs");
+  if (!split || present.has(side)) return [side];
+  const options: SideName[] = [];
+  if (present.has("ours")) options.push("ours");
+  if (present.has("theirs")) options.push("theirs");
+  return options;
+}
+
 function scanLinesForSide(scan: ParsedAct, side: SideName): ActLine[] {
   const present = new Set(scan.lines.map((line) => line.side));
   if (!present.has("ours") && !present.has("theirs")) return scan.lines;
   if (present.has(side)) return scan.lines.filter((line) => line.side === side);
-  return scan.lines;
+  return [];
 }
 
 function buildLooseReport(
@@ -273,15 +283,11 @@ function buildLooseReport(
   side: SideName,
   mirror: boolean,
   voice: NoteVoice,
+  scanSide: SideName = side,
 ): SideReport {
   const excelLines = linesFor(excel, side);
-  const scanLines = scanLinesForSide(scan, side);
-  const scanSummary =
-    side === "theirs" && scan.theirsSummary
-      ? scan.theirsSummary
-      : scan.twoSided
-        ? summaryFor(scan, side)
-        : scan.summary;
+  const scanLines = scanLinesForSide(scan, scanSide);
+  const scanSummary = scanSide === "theirs" ? summaryFor(scan, "theirs") : scan.summary;
   return {
     title: sideTitle(side),
     side,
@@ -337,12 +343,12 @@ export function compareActs(
   let best: { side: SideName; mirror: boolean; report: SideReport; score: [number, number] } | null =
     null;
   for (const side of candidateSides) {
-    for (const mirror of mirrors) {
-      const report = side === "single"
-        ? buildLooseReport(excel, scan, "single", mirror, voice)
-        : buildLooseReport(excel, scan, side, mirror, voice);
-      const score = quality(report.pairs);
-      if (!best || better(score, best.score)) best = { side, mirror, report, score };
+    for (const scanSide of scanCandidates(scan, side)) {
+      for (const mirror of mirrors) {
+        const report = buildLooseReport(excel, scan, side, mirror, voice, scanSide);
+        const score = quality(report.pairs);
+        if (!best || better(score, best.score)) best = { side, mirror, report, score };
+      }
     }
   }
 

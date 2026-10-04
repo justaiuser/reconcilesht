@@ -23,9 +23,9 @@ export type QwenRow = {
   rightCredit: number | null;
 };
 
-export const QWEN_PROMPT = `Это страница акта сверки двух организаций. Слева одна колонка, справа другая. Верни только JSON без пояснений:
-{"newAct":true,"partyLeft":"","partyRight":"","period":"","rows":[{"date":"12.01.2026","document":"Продажа (1 от 12.01.2026)","number":"1","leftDebit":471487.25,"leftCredit":null,"rightDebit":null,"rightCredit":471487.25}],"left":{"openingDebit":null,"openingCredit":null,"turnoverDebit":null,"turnoverCredit":null,"closingDebit":null,"closingCredit":null},"right":{"openingDebit":null,"openingCredit":null,"turnoverDebit":null,"turnoverCredit":null,"closingDebit":null,"closingCredit":null}}
-newAct равен true только если страница начинается с заголовка «Акт сверки». Продолжение таблицы — false. Суммы — числа с точкой, пустая ячейка — null. Не пропускай строки и не складывай соседние суммы. Итоги сальдо и оборотов положи в left и right.`;
+export const QWEN_PROMPT = `Это страница акта сверки. Верни только JSON без пояснений:
+{"newAct":true,"partyLeft":"","partyRight":"","period":"","rows":[{"date":"24.09.2025","document":"Исходящие счета","number":"1800065755-254","leftDebit":1330442.88,"leftCredit":null,"rightDebit":null,"rightCredit":null}],"left":{"openingDebit":null,"openingCredit":null,"turnoverDebit":null,"turnoverCredit":null,"closingDebit":null,"closingCredit":null},"right":{"openingDebit":null,"openingCredit":null,"turnoverDebit":null,"turnoverCredit":null,"closingDebit":null,"closingCredit":null}}
+number — номер счета из своей колонки, целиком, как 1800065755-254. document — название операции без номера. Если колонка сумм одна, заполни только left, а right оставь null и не копируй сумму во вторую колонку. Если колонки две, левая сумма идет в left, правая в right. Строки «Сальдо», «Входящее сальдо» и «Исходящее сальдо» в rows не пиши, положи их в left и right. newAct равен true только если страница начинается с «Акт сверки». Суммы — числа с точкой, пустая ячейка — null. Не пропускай строки и не складывай соседние суммы.`;
 
 export function parseQwenResponse(raw: string): QwenPage {
   const start = raw.indexOf("{");
@@ -95,13 +95,19 @@ function cloneAct(act: ParsedAct): ParsedAct {
 
 function pageToAct(page: QwenPage, prefix: string): ParsedAct {
   const lines: ActLine[] = [];
+  let skippedBalance = false;
   page.rows.forEach((row, index) => {
+    if (/сальдо/i.test(row.document)) {
+      skippedBalance = true;
+      return;
+    }
     pushSide(lines, "ours", row, row.leftDebit, row.leftCredit, `${prefix}-l-${index}`);
     pushSide(lines, "theirs", row, row.rightDebit, row.rightCredit, `${prefix}-r-${index}`);
   });
   const rightHasSummary = hasAmount(page.right);
   const warnings: string[] = [];
   if (page.rows.length === 0) warnings.push("На странице модель не нашла строк таблицы.");
+  if (skippedBalance) warnings.push("Строку сальдо не сверяю как документ.");
   if (page.note) warnings.push(page.note);
   return {
     title: null,
@@ -211,6 +217,7 @@ function rawText(page: QwenPage): string {
   const rows = page.rows.map((row) =>
     [
       row.date,
+      row.number ? `№${row.number}` : "",
       row.document,
       row.leftDebit != null ? `лев.деб ${row.leftDebit}` : "",
       row.leftCredit != null ? `лев.кред ${row.leftCredit}` : "",

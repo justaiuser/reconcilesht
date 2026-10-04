@@ -1,14 +1,14 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseMoney, parseDate, extractDocNumber, docFromDocumentCell, normalizeDoc } from "./text";
-import { detectColumns, parseExcelMatrix } from "./excel-act";
+import { parseMoney, parseDate, extractDocNumber, docFromDocumentCell, lineLabel, normalizeDoc } from "./text";
+import { detectColumns, emptySummary, parseExcelMatrix } from "./excel-act";
 import { groupLines, parseOcrDocuments, parseOcrPages, parseOcrWords } from "./ocr-table";
 import { pageStrips } from "./page-strips";
 import { compareActs, compareDocuments } from "./compare";
 import { parseQwenResponse, qwenPagesToRecognition, type QwenPage } from "./qwen-act";
 import { chooseQwenModel } from "./qwen-ollama";
 import { buildExcelMatrix, buildSampleScanAct } from "./sample-data";
-import type { OcrWord } from "./types";
+import type { ActLine, ParsedAct, OcrWord } from "./types";
 
 describe("деньги и даты", () => {
   it("понимает русскую запись суммы", () => {
@@ -389,6 +389,38 @@ describe("ответ Qwen", () => {
   });
 });
 
+describe("одна колонка Excel и две колонки ответа Qwen", () => {
+  it("сверяет номера счетов один раз и не берет сальдо в документы", () => {
+    const page = parseQwenResponse(
+      JSON.stringify({
+        newAct: true,
+        rows: [
+          echoed("24.09.2025", "1800065755-254", 1330442.88),
+          echoed("26.09.2025", "1800066630-254", 3615754.13),
+          { date: "01.10.2025", document: "Сальдо на 01.10.2025", leftDebit: 471487.25, rightCredit: 471487.25 },
+        ],
+      }),
+    );
+    const recognized = qwenPagesToRecognition([page]);
+    assert.equal(recognized.act.lines.some((line) => /сальдо/i.test(line.description)), false);
+    assert.equal(recognized.act.warnings.some((warning) => warning.includes("сальдо")), true);
+    assert.match(recognized.act.rawText, /№1800065755-254/);
+
+    const excel = bareAct([
+      invoice("e1", "single", "2025-09-24", "1800065755-254", null, 1330442.88),
+      invoice("e2", "single", "2025-09-26", "1800066630-254", null, 3617522.5),
+    ]);
+    const result = compareActs(excel, recognized.act);
+    const pairs = result.reports[0]?.pairs ?? [];
+    assert.equal(pairs.filter((pair) => pair.status === "scan-only").length, 0);
+    assert.equal(pairs.find((pair) => pair.excel?.docNumber === "1800065755-254")?.status, "match");
+    assert.equal(pairs.find((pair) => pair.excel?.docNumber === "1800066630-254")?.status, "amount");
+    assert.equal(pairs.length, 2);
+    assert.equal(lineLabel("Исходящие счета", "1800065755-254"), "Исходящие счета № 1800065755-254");
+    assert.equal(lineLabel("1800065755-254", "1800065755-254"), "1800065755-254");
+  });
+});
+
 describe("выбор модели Qwen", () => {
   it("предпочитает instruct и иначе берёт любую qwen3-vl", () => {
     assert.equal(
@@ -403,6 +435,45 @@ describe("выбор модели Qwen", () => {
     assert.equal(chooseQwenModel(["llama3"], "qwen3-vl:2b-instruct"), null);
   });
 });
+
+function echoed(date: string, number: string, amount: number) {
+  return {
+    date,
+    document: "Исходящие счета",
+    number,
+    leftDebit: amount,
+    leftCredit: null,
+    rightDebit: null,
+    rightCredit: amount,
+  };
+}
+
+function invoice(
+  id: string,
+  side: ActLine["side"],
+  date: string,
+  docNumber: string,
+  debit: number | null,
+  credit: number | null,
+): ActLine {
+  return { id, side, date, docNumber, description: docNumber, debit, credit };
+}
+
+function bareAct(lines: ActLine[]): ParsedAct {
+  return {
+    title: null,
+    period: null,
+    partyA: null,
+    partyB: null,
+    lines,
+    summary: emptySummary(),
+    theirsSummary: null,
+    warnings: [],
+    confidence: null,
+    rawText: "",
+    twoSided: false,
+  };
+}
 
 function qwenPayload(number: string, amount: number): QwenPage {
   return {
