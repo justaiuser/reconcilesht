@@ -9,6 +9,8 @@ import { QWEN_PROMPT, looksLooping, parseQwenResponse, qwenPagesToRecognition, t
 import { readPrintedPage } from "./printed-row";
 import { chooseQwenModel, readStream } from "./qwen-ollama";
 import { buildExcelMatrix, buildSampleScanAct } from "./sample-data";
+import { textLayerLooksUseful } from "./pdf-text";
+import { analysisCounts, buildAnalysis, isWeakRecognition } from "./quality";
 import type { ActLine, ParsedAct, OcrWord } from "./types";
 
 describe("деньги и даты", () => {
@@ -512,6 +514,34 @@ describe("строка печатного акта", () => {
     assert.equal(page.summary.openingDebit, null);
     assert.equal(page.lines[0]?.number, "1");
     assert.equal(page.lines[0]?.debit, 471487.25);
+  });
+});
+
+describe("качество чтения и анализ", () => {
+  it("считает слабым акт без сумм и нормальным пример сверки", () => {
+    assert.equal(isWeakRecognition(bareAct([])), true);
+    assert.equal(isWeakRecognition(bareAct([invoice("1", "single", "2026-01-12", "15", 100, null)])), false);
+    assert.equal(textLayerLooksUseful(["заголовок"]), false);
+    assert.equal(
+      textLayerLooksUseful(["12.01.2026 Продажа №1 120000,00", "Сальдо конечное 100,00", "ещё строка"]),
+      true,
+    );
+  });
+
+  it("собирает краткий анализ совпадений и расхождений", () => {
+    const matrix = buildExcelMatrix();
+    const map = detectColumns(matrix);
+    assert.ok(map);
+    const result = compareActs(parseExcelMatrix(matrix, map), buildSampleScanAct());
+    const counts = analysisCounts(result);
+    assert.equal(counts.matches > 0, true);
+    assert.equal(counts.amountDiffs >= 2, true);
+    assert.equal(counts.onlyLeft >= 1, true);
+    assert.equal(counts.onlyRight >= 1, true);
+    const analysis = buildAnalysis(result);
+    assert.ok(analysis.some((line) => /Совпало|сходится/i.test(line)));
+    assert.ok(analysis.some((line) => /Разные суммы/i.test(line)));
+    assert.ok(analysis.some((line) => /сальдо|обороты/i.test(line)));
   });
 });
 

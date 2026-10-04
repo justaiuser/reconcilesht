@@ -1,4 +1,5 @@
-import { printedPagesToRecognition, type PrintedPage } from "@/lib/printed-row";
+import { pageTextLines, textLayerLooksUseful } from "@/lib/pdf-text";
+import { printedPagesToRecognition, readPrintedPage, type PrintedPage } from "@/lib/printed-row";
 import type { ParsedAct } from "@/lib/types";
 import type { RecognizeProgress } from "@/lib/recognize";
 
@@ -22,6 +23,7 @@ export async function recognizeRows(
       );
     }
     const pages: PrintedPage[] = [];
+    let usedTextLayer = false;
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
       shouldCancel();
       onProgress({
@@ -29,6 +31,13 @@ export async function recognizeRows(
         percent: 8 + ((pageNumber - 1) / pdf.numPages) * 84,
       });
       const source = await pdf.getPage(pageNumber);
+      const textLines = await pageTextLines(source);
+      if (textLayerLooksUseful(textLines)) {
+        usedTextLayer = true;
+        pages.push(readPrintedPage(textLines));
+        source.cleanup();
+        continue;
+      }
       const unscaled = source.getViewport({ scale: 1 });
       const longest = Math.max(unscaled.width, unscaled.height);
       const viewport = source.getViewport({ scale: Math.min(4, 3400 / longest) });
@@ -50,7 +59,18 @@ export async function recognizeRows(
       pages.push(body.page);
     }
     onProgress({ label: "Сопоставляем строки…", percent: 96 });
-    return printedPagesToRecognition(pages);
+    const recognized = printedPagesToRecognition(pages);
+    if (usedTextLayer) {
+      recognized.act.confidence = 92;
+      recognized.act.warnings = [
+        ...recognized.act.warnings,
+        "Часть страниц прочитана из текстового слоя PDF (без OCR).",
+      ];
+      for (const document of recognized.documents) {
+        document.confidence = document.confidence ?? 92;
+      }
+    }
+    return recognized;
   } finally {
     await loadingTask.destroy();
   }

@@ -5,6 +5,7 @@ import { Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { CompareLabels, CompareMode, CompareResult, MirrorMode, Pair, SideReport } from "@/lib/types";
 import { problemCount } from "@/lib/compare";
+import { buildAnalysis } from "@/lib/quality";
 import { downloadReport } from "@/lib/report";
 import { formatDateRu, formatMoney, lineLabel } from "@/lib/text";
 import { cn } from "@/lib/utils";
@@ -31,6 +32,7 @@ export function ResultView({
   onMirror,
 }: ResultViewProps) {
   const problems = result.reports.reduce((sum, report) => sum + problemCount(report), 0);
+  const analysis = buildAnalysis(result);
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
 
@@ -45,6 +47,13 @@ export function ResultView({
             <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">
               {result.interpretation}
             </p>
+            {analysis.length > 0 ? (
+              <ul className="mt-3 max-w-3xl list-disc space-y-1 pl-5 text-sm leading-6">
+                {analysis.map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
+            ) : null}
           </div>
           <Button
             type="button"

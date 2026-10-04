@@ -9,6 +9,7 @@ import { ResultView } from "@/components/result-view";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { compareActs, compareDocuments } from "@/lib/compare";
 import { blankMap, detectColumns, parseExcelMatrix } from "@/lib/excel-act";
+import { isWeakRecognition } from "@/lib/quality";
 import { recognizeRows } from "@/lib/row-client";
 import { recognizeWithQwen } from "@/lib/qwen-client";
 import { countPdfPages } from "@/lib/recognize";
@@ -173,9 +174,50 @@ export function ReconcileApp() {
       const shouldCancel = () => {
         if (cancelRef.current) throw new Error("cancelled");
       };
-      const recognized = useQwenRef.current
+      let recognized = useQwenRef.current
         ? await recognizeWithQwen(pdfFile, onProgress, shouldCancel, { columns: singleFileRef.current })
         : await recognizeRows(pdfFile, onProgress, shouldCancel);
+      if (cancelRef.current) return;
+
+      // Requirement: weak OCR → AI fallback (Qwen), when Ollama is available.
+      if (
+        !useQwenRef.current &&
+        qwenReady &&
+        isWeakRecognition(recognized.act) &&
+        !cancelRef.current
+      ) {
+        onProgress({
+          label: "OCR прочитал мало строк — пробуем Qwen…",
+          percent: 45,
+        });
+        try {
+          const fallback = await recognizeWithQwen(pdfFile, onProgress, shouldCancel, {
+            columns: singleFileRef.current,
+          });
+          if (!cancelRef.current && !isWeakRecognition(fallback.act)) {
+            recognized = {
+              act: {
+                ...fallback.act,
+                warnings: [
+                  ...fallback.act.warnings,
+                  "Обычное чтение скана дало мало строк, поэтому таблицу дочитал Qwen. Сверьте суммы с бумагой.",
+                ],
+              },
+              documents: fallback.documents.map((document) => ({
+                ...document,
+                warnings: [
+                  ...document.warnings,
+                  "Обычное чтение скана дало мало строк, поэтому таблицу дочитал Qwen.",
+                ],
+              })),
+            };
+            setQwen(true);
+          }
+        } catch {
+          // Keep OCR result; accountant still sees whatever was parsed.
+        }
+      }
+
       if (cancelRef.current) return;
       setScanAct(recognized.act);
       setDocuments(recognized.documents);
@@ -239,11 +281,11 @@ export function ReconcileApp() {
           <div>
             <h1 className="text-xl font-semibold tracking-tight">Сверка актов</h1>
             <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
-              Скан акта сверки и файл из учётной программы. Если в скане уже две
+              Скан акта сверки (PDF) и акт из 1С (Excel .xlsx). Если в скане уже две
               колонки, Excel не нужен.{" "}
               {useQwen
-                ? "Скан читает модель Qwen. Она может перепутать цифру или строку, поэтому для точной сверки галочку лучше снять."
-                : "Каждая строка скана читается отдельно на компьютере, где запущена программа, и цифра не может переехать в соседнюю строку. В интернет файл не отправляется."}
+                ? "Скан читает модель Qwen. Она может перепутать цифру или строку — сверяйте суммы с бумагой."
+                : "Строки скана читаются OCR на этом компьютере; при слабом чтении, если доступен Qwen, программа переключится на него. В интернет файл не отправляется."}
             </p>
           </div>
           <ThemeToggle />
@@ -284,8 +326,8 @@ export function ReconcileApp() {
               <span className="font-medium">Читать через Qwen</span>
               <span className="mt-0.5 block text-muted-foreground">
                 {qwenHint ? `${qwenHint}. ` : ""}
-                Модель переписывает таблицу своими словами и путает похожие суммы. Без
-                галочки программа читает каждую строку отдельно и берёт цифры из неё.
+                Без галочки сначала идёт OCR по строкам; если строк почти нет, Qwen
+                включится сам. Модель может перепутать похожие суммы — сверяйте итог с бумагой.
               </span>
             </span>
           </label>
@@ -307,8 +349,8 @@ export function ReconcileApp() {
           />
           {singleFile ? null : (
             <FileDrop
-              title="Акт из программы"
-              hint="Книга Excel .xlsx, как её выгружает учётная программа."
+              title="Акт из 1С"
+              hint="Книга Excel .xlsx, выгруженная из 1С (акт сверки)."
               accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
               fileName={excelName}
               disabled={working || sampleBusy}
