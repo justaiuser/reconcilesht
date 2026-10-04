@@ -31,13 +31,14 @@ export const QWEN_PROMPT = `Перед тобой страница акта св
 - document — название операции, как написано в строке.
 - number — номер документа из этой строки, все цифры и дефисы подряд. Если номера нет, null.
 - В акте бывает одна таблица сумм или две рядом: слева одна организация, справа другая. Суммы левой таблицы — leftDebit и leftCredit. Суммы правой — rightDebit и rightCredit. Если таблица одна, right-поля всегда null.
-- Сумму пиши числом: без пробелов между разрядами, копейки через точку. Пустая ячейка — null.
+- Картинка может быть куском страницы без шапки таблицы. Тогда внутри каждой таблицы левая колонка сумм — дебет, правая — кредит.
+- Сумму перепиши строкой точно как напечатано, с пробелами между разрядами и запятой перед копейками. Пустая ячейка — null.
 - Переписывай только печатный текст. Рукописные пометки, подписи и печати не переписывай.
 - Сальдо и обороты не пиши в rows. Входящее или начальное сальдо — opening, обороты и «Итого за период» — turnover, исходящее или конечное сальдо — closing. Суммы левой таблицы — в left, правой — в right.
 - partyLeft и partyRight — названия организаций из шапки, period — период акта, иначе null.
 - newAct — true, если вверху страницы заголовок «Акт сверки» и шапка с организациями. Если страница начинается с «Лист 2», «Лист 3» или продолжает таблицу, false.`;
 
-const MONEY = { type: ["number", "null"] };
+const MONEY = { type: ["string", "null"] };
 const TEXT = { type: ["string", "null"] };
 const SUMMARY_SCHEMA = {
   type: "object",
@@ -290,10 +291,48 @@ function dropRepeats(rows: QwenRow[]): QwenRow[] {
 }
 
 function docNumberText(value: unknown): string | null {
-  const text = textOrNull(value);
+  const text = textOrNull(value)?.replace(/^№\s*/, "").replace(/\s+от\s+.*$/i, "").trim();
   if (!text) return null;
   if (/^\d{1,3}(?:[\s\u00a0]\d{3})+(?:[,.]\d{2})?$|^\d+[,.]\d{2}$/.test(text)) return null;
   return text;
+}
+
+// A right-hand table read on its own comes back in the left-hand fields.
+export function asRightTable(page: QwenPage): QwenPage {
+  return {
+    ...page,
+    partyRight: page.partyRight ?? page.partyLeft,
+    partyLeft: null,
+    rows: page.rows.map((row) => {
+      const leftEmpty = row.leftDebit == null && row.leftCredit == null;
+      return {
+        ...row,
+        leftDebit: null,
+        leftCredit: null,
+        rightDebit: leftEmpty ? row.rightDebit : row.leftDebit,
+        rightCredit: leftEmpty ? row.rightCredit : row.leftCredit,
+      };
+    }),
+    left: emptySummary(),
+    right: hasAmount(page.left) ? page.left : page.right,
+  };
+}
+
+export function joinTables(left: QwenPage, right: QwenPage): QwenPage {
+  const leftOnly = {
+    ...left,
+    rows: left.rows.map((row) => ({ ...row, rightDebit: null, rightCredit: null })),
+  };
+  return {
+    newAct: left.newAct || right.newAct,
+    partyLeft: leftOnly.partyLeft,
+    partyRight: right.partyRight,
+    period: left.period ?? right.period,
+    rows: [...leftOnly.rows, ...right.rows],
+    left: left.left,
+    right: right.right,
+    note: [left.note, right.note].filter(Boolean).join(" ") || null,
+  };
 }
 
 function normalizeRow(value: unknown): QwenRow {

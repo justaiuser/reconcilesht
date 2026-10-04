@@ -8,6 +8,7 @@ export function pageStrips(
   width: number,
   height: number,
   channels = 4,
+  rowsPerStrip = ROWS_PER_STRIP,
 ): PageStrip[] {
   if (width < 2 || height < 2) return [{ top: 0, bottom: height }];
   const bands = textBands(pixels, width, height, channels);
@@ -26,10 +27,10 @@ export function pageStrips(
 
   const rows = splitTallBands(bands, median);
   const strips: PageStrip[] = [];
-  for (let index = 0; index < rows.length; index += ROWS_PER_STRIP) {
-    const chunk = rows.slice(index, index + ROWS_PER_STRIP);
+  for (let index = 0; index < rows.length; index += rowsPerStrip) {
+    const chunk = rows.slice(index, index + rowsPerStrip);
     const previous = rows[index - 1];
-    const next = rows[index + ROWS_PER_STRIP];
+    const next = rows[index + rowsPerStrip];
     const padBefore = previous ? Math.min(8, Math.max(1, Math.floor((chunk[0].top - previous.bottom) / 2))) : 4;
     const last = chunk[chunk.length - 1];
     const padAfter = next ? Math.min(8, Math.max(1, Math.floor((next.top - last.bottom) / 2))) : 4;
@@ -47,6 +48,37 @@ export function pageStrips(
   strips[0].top = 0;
   strips[strips.length - 1].bottom = height;
   return strips;
+}
+
+// Two-column acts put the companies' tables side by side; the darkest vertical rule near the
+// middle is their shared border.
+export function columnSplit(
+  pixels: Uint8Array | Uint8ClampedArray,
+  width: number,
+  height: number,
+  channels = 4,
+): number {
+  const from = Math.floor(width * 0.35);
+  const to = Math.ceil(width * 0.65);
+  const sample = height > 900 ? 2 : 1;
+  let best = Math.round(width / 2);
+  let bestCount = -1;
+  for (let x = from; x < to; x += 1) {
+    let count = 0;
+    for (let y = 0; y < height; y += sample) {
+      const index = channels === 1 ? y * width + x : (y * width + x) * channels;
+      const luminance =
+        channels === 1
+          ? pixels[index]
+          : pixels[index] * 0.2126 + pixels[index + 1] * 0.7152 + pixels[index + 2] * 0.0722;
+      if (luminance < INK_LUMINANCE) count += 1;
+    }
+    if (count > bestCount) {
+      best = x;
+      bestCount = count;
+    }
+  }
+  return bestCount >= (height / sample) * 0.4 ? best : Math.round(width / 2);
 }
 
 function splitTallBands(bands: PageStrip[], median: number): PageStrip[] {

@@ -168,16 +168,15 @@ export function ReconcileApp() {
     setDocuments(null);
     setPhase({ kind: "working", label: "Готовим чтение скана…", percent: 2 });
     try {
-      const read = useQwenRef.current ? recognizeWithQwen : recognizePdf;
-      const recognized = await read(
-        pdfFile,
-        (progress) => {
-          if (!cancelRef.current) setPhase({ kind: "working", ...progress });
-        },
-        () => {
-          if (cancelRef.current) throw new Error("cancelled");
-        },
-      );
+      const onProgress = (progress: { label: string; percent: number }) => {
+        if (!cancelRef.current) setPhase({ kind: "working", ...progress });
+      };
+      const shouldCancel = () => {
+        if (cancelRef.current) throw new Error("cancelled");
+      };
+      const recognized = useQwenRef.current
+        ? await recognizeWithQwen(pdfFile, onProgress, shouldCancel, { columns: singleFileRef.current })
+        : await recognizePdf(pdfFile, onProgress, shouldCancel);
       if (cancelRef.current) return;
       setScanAct(recognized.act);
       setDocuments(recognized.documents);
